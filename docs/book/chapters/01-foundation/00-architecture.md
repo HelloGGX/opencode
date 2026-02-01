@@ -1,145 +1,489 @@
 # 1.0 全景架构与设计哲学
 
-> 在深入代码之前，我们需要理解 OpenCode 的整体架构和设计理念。这将帮助你建立全局视角，理解每个模块的定位和相互关系。
+在开始编写 OpenCode 的第一行代码之前，我们面临的第一个、也是最核心的抉择，并不是“选什么库”，而是 **“它应该长什么样”**。
 
----
+我们要构建的是一个 AI 编码助手（AI Coding Assistant）。当我们环顾现有的主流产品，如 GitHub Copilot 或 Cursor，它们**在用户层面**大多以 IDE 插件或“魔改 IDE”的形式存在。这似乎是一个非常符合直觉的选择：开发者在哪里写代码，工具就应该在哪里。
 
-## 1.0.1 OpenCode 架构全景图
+但如果我们仅从**交互入口的形态**出发，盲目跟随这个直觉，可能会陷入一种架构上的“局部最优”。要理解这一点，我们需要从 Agent 的本质需求出发，重新推演这个形态选择的过程。
 
-OpenCode 采用分层架构设计，从底层基础设施到顶层用户界面，共分为 5 个核心层次：
+假如我们选择做一个 VS Code 扩展，现代 IDE 的确为插件提供了相当丰富的能力。插件可以访问整个 workspace，读取和修改文件，感知 Git 状态，甚至通过终端间接执行 shell 命令。像 GitHub Copilot 这样的产品，已经证明了这些能力在“代码补全”和“局部生成”场景下的巨大价值。
+
+但关键问题不在于 **“能不能”**，而在于 **“适不适合”**。
+
+IDE 插件的设计初衷，是作为**编辑器的附属能力**存在的。根据 VS Code 的扩展 API 规范，插件主要通过公开的 API 与编辑器的生命周期、命令面板、界面组件和工作区交互。这些能力高度集中在编辑器上下文之内，旨在扩展或增强编辑体验，而不是作为一个长期运行、可自治、可编排的行动主体。
+
+从这个角度看，IDE 插件并不是一个合格的 Agent 宿主，它更像是一个 UI 层。即便在 GitHub Copilot 这样的产品中也是如此：插件本身并不承担复杂推理、多步规划或执行控制的职责，它的核心作用是采集上下文、触发请求并呈现结果，而真正的智能中枢始终运行在 IDE 之外的独立进程或服务中。
+
+相反，如果我们将视角转向 **终端（CLI）模式**，Agent 所处的环境就发生了本质变化。终端并不是某个应用的扩展点，而是开发者的“操作系统层级”入口。它允许 Agent 以脚本化的方式操作一切：编辑多文件、运行测试、分析构建结果、监控日志，甚至在后台持续迭代和自我修正。
+
+这种执行模型与 Agent 的“多步推理”（multi-step reasoning）高度契合。Agent 可以像一名人类工程师一样，将一个高层目标不断拆解为可执行的子任务，顺序执行，并根据中间反馈动态调整策略。这正是当前 IDE 插件体系难以自然承载的能力。
+
+考虑到 OpenCode 是一个**开源且本地运行**的 AI 编码助手，我们还需要优先保证可移植性和低门槛。IDE 插件通常强依赖某一具体编辑器（如 VS Code 或 JetBrains），这不仅提高了用户的切换成本，也限制了开源贡献者的参与方式——并不是每个人都使用同一个 IDE。
+
+而终端工具则天然具有跨平台优势。它可以作为一个独立的 CLI 程序运行，通过 pip、brew 等方式安装，适配任何操作系统和编辑环境。用户只需在 shell 中输入：
+
+```
+opencode --task "build a web app"
+```
+
+就可以启动一个完整的编码 Agent，而无需改变既有的开发习惯。
+
+从安全角度看，本地 Agent 还需要一个相对清晰的“执行边界”，以应对潜在的风险操作（例如运行生成的脚本或构建命令）。终端形态更容易与容器化机制（如 Docker）集成，使 Agent 能够在隔离环境中运行和测试，而不污染主机系统。这一点在 IDE 插件模型中实现起来则更加复杂，往往需要额外的权限设计和安全假设。
+
+此外，开源社区长期形成的开发工具范式，本身就高度偏好 CLI。Git、npm、Cargo 等工具的成功，很大程度上来自于它们的**组合性**：用户可以将这些命令自由地嵌入脚本、流水线或自动化系统中。一个以终端为核心形态的 AI 编码助手，也可以自然地融入这些工作流，例如作为 GitHub Actions 的一个步骤，或被 Neovim / Vim 作为外部命令调用。
+
+当然，这并不意味着我们要完全放弃图形化界面。更合理的路径是将终端中的 Agent 视为核心“引擎”，并在其之上构建可选的GUI层。例如，Agent 在 CLI 中执行核心逻辑，但通过 WebSocket 将执行进度、决策过程和中间结果实时可视化到浏览器或其他前端界面中。
+
+这是一种渐进式的架构选择：
+
+> **先定义一个独立、自治、可编排的编码 Agent，再为它提供 IDE 作为可选界面。**
+
+在这种架构下，IDE 不再是能力的边界，而只是 Agent 的众多“窗口”之一。这也更符合我们对 AI 编码助手本质的判断：它应该是一个独立的能力层，而不是某个特定编辑器的附属功能。
+
+## 1.0.1 架构的演进：从一个 while 循环说起
+
+确立了“以终端为核心”的形态后，摆在我们面前的下一个问题是：如何组织代码？
+
+如果我们忽略所有的工程细节，我们需要思考一个基本问题：一个 AI 编码助手本质上是什么？它既不是简单的“输入-输出”函数，也不是单纯的聊天机器人。它本质上是一个具备副作用（Side Effect）的无限状态机。
+
+一个功能往往可以抽象为一个函数：给它一个输入，它返回一个输出。对于 AI 助手来说，最简单的模型如下：
+
+```javascript
+const answer = await llm.ask("帮我写一个快速排序")
+console.log(answer)
+```
+但当我们尝试用这种模式去处理真实世界的工程问题时，很快就会遇到挑战。
+
+### 为什么需要“循环”？
+假设用户提出了一个任务：“帮我修复项目中的类型报错”。这时，AI 仅靠一次“输入-输出”是无法完成任务的。因为它必须先查看具体的报错信息，读取代码文件，尝试修改，然后再次确认是否还有报错。
+
+这意味着，智能体的行为不再是一次性的，而是一个持续的、有反馈的过程。为了实现这种持续性，我们必须引入一个最基础的结构：while 循环。
+
+为了理解这一点，我们可以试着写一个最简陋的 Agent 。我们暂且叫它 SimpleAgent。假设我们要写一个程序，让它不断地检查环境并做出反应，最直观的代码可能是这样的：
+```javascript
+// ❌ 这是一个有缺陷的初步设计
+function runAgent() {
+  while (true) {
+    const userInput = getUserInput();
+    const result = llm.think(userInput);
+    console.log(result);
+  }
+}
+```
+这段代码虽然能跑。但作为一个工程实现，它存在两个致命的痛点：
+1. 缺乏终止条件：在计算机科学中，任何递归或循环都需要一个基准情形（Base Case）来退出。对于 LLM Agent 而言，无限循环意味着无限消耗 Token。
+2. 状态丢失：runAgent 函数内部是无状态的。Agent 不知道自己上一轮做了什么，也不知道距离目标还有多远。它就像一条金鱼，每一轮循环都是全新的开始。
+
+为了解决这两个问题，我们需要将 Agent 从一个简单的函数升级为一个对象（Object），利用对象来通过内存维持状态。
+
+### 引入状态与约束
+我们需要设计一种数据结构，它不仅能描述 Agent 的“当前位置”，还能描述它的“资源约束”。这就引出了 JavaScript 中类（Class）的概念，它可以将状态、行为与约束封装在一个稳定的对象边界内，使 Agent 不再是一次性计算，而是一个可持续演化的系统实体。基于这一点，我们声明一个 SimpleAgent 类。
+
+让我们通过重构代码来看看，如何通过引入 energy（资源约束）和 goal（目标）来解决上述痛点。
+
+```typescript
+interface AgentState {
+  // 资源约束：用于解决无限循环和成本控制问题
+  energy: number;
+  // 核心指令：Agent 存在的终极目的
+  goal: string;
+  // 可变状态：描述 Agent 当前在环境中的位置
+  position: number;
+  // 验收标准：当 position === targetPosition 时，任务结束
+  targetPosition: number;
+}
+
+class SimpleAgent {
+  // 使用 private 封装状态，避免外部随意修改导致状态机混乱
+  private state: AgentState;
+
+  constructor() {
+    // 初始化状态，这相当于 Agent 的“出厂设置”
+    this.state = {
+      energy: 100,
+      goal: "reach target",
+      position: 0,
+      targetPosition: 10
+    };
+  }
+  
+  // ... 后续逻辑
+}
+```
+我们可以将以上代码与真实的 LLM 编码助手场景进行一一映射：
+- energy (资源约束)：这不仅仅是一个数字。在真实场景中，它对应着 Context Window（上下文窗口） 的剩余空间，或者是用户的 API 预算。每次 Agent 执行操作（Act），都会消耗能量。当能量耗尽时，无论任务是否完成，Agent 都必须强制停止。这是为了防止程序陷入死循环而设计的“熔断机制”。
+- goal (核心指令)：对应 System Prompt（系统提示词）。它定义了 Agent 的行为边界，例如“你是一个资深的 TypeScript 程序员”。
+- position (当前上下文)：这是一个典型的可变状态（Mutable State）。在编码助手中，它代表当前代码库的状态（Git Diff）、报错信息或文件内容。随着 Agent 的运行，这个状态会不断发生变化（即副作用）。
+- targetPosition (验收标准)：Agent 怎么知道自己做完了？在前面的简单循环中，Agent 是不知道停下来的。而在状态机模型中，当 position 与 targetPosition 重合（例如：单元测试全绿），即视为任务达成。
+
+### 感知-决策-行动 循环
+有了状态，Agent 依然是静止的。为了让它动起来，我们需要实现一个驱动循环。但在实现循环之前，必须先定义循环体内的逻辑。
+在控制论中，智能体的行为通常遵循 P-D-A 范式：
+1. 感知 (Perceive)：从环境中获取信息，更新内部认知。
+2. 决策 (Decide)：基于感知到的信息和当前目标，选择下一个动作。
+3. 行动 (Act)：执行动作，产生副作用，改变环境。
+
+#### 感知 (Perceive)
+Agent 无法直接处理原始的物理世界数据，它需要将环境信息抽象为它能理解的数据格式。
+
+```typescript
+// Agent perceives its environment
+  private perceive(): { distanceToTarget: number; energyLevel: string } {
+    const distance = Math.abs(this.state.targetPosition - this.state.position);
+    // 将连续的数值离散化为状态标签，降低决策的复杂度
+    const energyLevel = this.state.energy > 50 ? "high" : this.state.energy > 20 ? "medium" : "low";
+
+    return { distanceToTarget: distance, energyLevel };
+  }
+```
+> 注意这里的一个细节：我们在 perceive 中并没有直接返回 energy 的数值，而是将其转换为了 'high' | 'medium' | 'low' 这样的语义化标签。这种处理方式在 AI 领域非常常见——通过抽象降低决策模型的输入维度。对于 LLM 来说，"High" 比 "87" 更容易作为 prompt 的一部分进行推理。
+
+#### 决策 (Decide)
+有了感知数据，Agent 就需要做出判断。这部分逻辑构成了 Agent 的“大脑”。
+
+```typescript
+// Agent decides what to do
+  private decide(perception: { distanceToTarget: number; energyLevel: string }): string {
+    // 优先级 1：生存优先。如果能量过低，必须休息，否则任务会失败。
+    if (perception.energyLevel === "low") {
+      return "rest";
+    }
+
+    // 优先级 2：任务优先。如果还未到达目标，继续移动。
+    if (perception.distanceToTarget > 0) {
+      return "move";
+    }
+
+    // 优先级 3：任务完成。
+    return "celebrate";
+  }
+```
+这里的 decide 函数是一个纯函数（Pure Function），它完全依赖于输入产生输出，没有副作用。在真实的 AI Agent 中，这个函数内部通常就是一次 LLM API Call。我们把感知到的环境（Prompt）发给 LLM，它返回一个意图（Intent）。
+
+#### 行动 (Act)
+最后，我们需要一个函数来执行决策。这是整个系统中唯一产生副作用的地方。
+
+```typescript
+// Agent takes action
+  private act(action: string): boolean {
+    console.log(`🤖 Agent action: ${action}`);
+
+    switch (action) {
+      case "move":
+        // 模拟向目标逼近的副作用
+        if (this.state.position < this.state.targetPosition) {
+          this.state.position++;
+        } else if (this.state.position > this.state.targetPosition) {
+          this.state.position--;
+        }
+        // 关键点：行动必然伴随着资源的消耗
+        this.state.energy -= 10;
+        console.log(`   Moved to position ${this.state.position} (Energy: ${this.state.energy})`);
+        break;
+
+      case "rest":
+        this.state.energy += 30;
+        console.log(`   Resting... (Energy: ${this.state.energy})`);
+        break;
+
+      case "celebrate":
+        console.log(`   🎉 Goal achieved! Reached position ${this.state.position}`);
+        return true; // 信号：任务完成
+    }
+
+    return false; // 信号：继续运行
+  }
+```
+
+#### 组装运行时 (Runtime)
+现在，我们将上述所有部件组装在一起，形成最终的 run 方法。你会发现，这其实就是我们最开始那个简陋 while 循环的完全体进化版。
+
+```typescript
+public run(): void {
+    console.log("🚀 Agent starting...\n");
+
+    let isRunning = true;
+    let step = 0;
+    
+    // 这里的 20 是一个硬性的 Safety Limit，防止程序失控
+    while (isRunning && step < 20) { 
+      step++;
+      console.log(`--- Step ${step} ---`);
+
+      // 1. 感知
+      const perception = this.perceive();
+      // 2. 决策
+      const decision = this.decide(perception);
+      // 3. 行动（并获取反馈）
+      const missionComplete = this.act(decision);
+
+      // 检查终止条件：任务完成
+      if (missionComplete) {
+        isRunning = false;
+      }
+
+      // 检查终止条件：资源耗尽（熔断机制）
+      if (this.state.energy <= 0) {
+        console.log("💀 Agent ran out of energy!");
+        isRunning = false;
+      }
+
+      console.log(); 
+    }
+
+    console.log("🏁 Agent stopped.");
+  }
+```
+
+下面是完整的代码实现：
+
+```typescript
+interface AgentState {
+  energy: number;
+  goal: string;
+  position: number;
+  targetPosition: number;
+}
+
+class SimpleAgent {
+  private state: AgentState;
+
+  constructor() {
+    this.state = {
+      energy: 100,
+      goal: "reach target",
+      position: 0,
+      targetPosition: 10
+    };
+  }
+
+  // Agent perceives its environment
+  private perceive(): { distanceToTarget: number; energyLevel: string } {
+    const distance = Math.abs(this.state.targetPosition - this.state.position);
+    const energyLevel = this.state.energy > 50 ? "high" : this.state.energy > 20 ? "medium" : "low";
+
+    return { distanceToTarget: distance, energyLevel };
+  }
+
+  // Agent decides what to do
+  private decide(perception: { distanceToTarget: number; energyLevel: string }): string {
+    if (perception.energyLevel === "low") {
+      return "rest";
+    }
+
+    if (perception.distanceToTarget > 0) {
+      return "move";
+    }
+
+    return "celebrate";
+  }
+
+  // Agent takes action
+  private act(action: string): boolean {
+    console.log(`🤖 Agent action: ${action}`);
+
+    switch (action) {
+      case "move":
+        // Move towards target
+        if (this.state.position < this.state.targetPosition) {
+          this.state.position++;
+        } else if (this.state.position > this.state.targetPosition) {
+          this.state.position--;
+        }
+        this.state.energy -= 10;
+        console.log(`   Moved to position ${this.state.position} (Energy: ${this.state.energy})`);
+        break;
+
+      case "rest":
+        this.state.energy += 30;
+        console.log(`   Resting... (Energy: ${this.state.energy})`);
+        break;
+
+      case "celebrate":
+        console.log(`   🎉 Goal achieved! Reached position ${this.state.position}`);
+        return true; // Mission complete
+    }
+
+    return false; // Continue running
+  }
+
+  // Main agent loop
+  public run(): void {
+    console.log("🚀 Agent starting...\n");
+
+    let isRunning = true;
+    let step = 0;
+
+    while (isRunning && step < 20) { // Safety limit
+      step++;
+      console.log(`--- Step ${step} ---`);
+
+      // Agent cycle: Perceive -> Decide -> Act
+      const perception = this.perceive();
+      const decision = this.decide(perception);
+      const missionComplete = this.act(decision);
+
+      // Check if mission is complete
+      if (missionComplete) {
+        isRunning = false;
+      }
+
+      // Check if agent is out of energy
+      if (this.state.energy <= 0) {
+        console.log("💀 Agent ran out of energy!");
+        isRunning = false;
+      }
+
+      console.log(); // Empty line for readability
+    }
+
+    console.log("🏁 Agent stopped.");
+  }
+}
+
+// Run the agent
+const agent = new SimpleAgent();
+agent.run();
+```
+
+通过这段 SimpleAgent 的实现，我们构建了一个最小化的智能体模型。它不仅解决了最初“无限循环”和“状态丢失”的问题，还引入了资源约束和感知抽象的概念。
+
+然而，细心的读者可能会发现，当前的 SimpleAgent 依然存在一个巨大的局限性：它的行为逻辑是硬编码的（写死在 switch-case 中）。
+
+1. **交互的阻塞性**： 当 `callLLM` 正在进行网络请求时（这通常需要几秒甚至更久），整个程序是“假死”的。用户无法中断当前的执行，无法输入新的指令修正方向，甚至连实时的流式输出（Streaming）都很难优雅地插入到这个同步循环中，
+
+2. **能力的耦合**： SimpleAgent使用了很多`console.log`, 如果某天我们需要为它开发一个 VS Code 插件或者 Web 界面，上这段逻辑就必须重写，因为 VS Code 不需要 console.log，而是需要 window.showInformationMessage。我们需要一套机制，让核心逻辑“看不见”用户界面，无论是 TUI、Web 还是 IDE，对核心逻辑来说都应该只是不同的“渲染端”。
+
+3. **状态的易失性**： 所有的上下文（context）都保存在内存变量中。一旦用户关闭终端，或者程序因网络波动崩溃，所有的对话历史、AI 对项目结构的理解瞬间归零。
+
+为了解决这些问题，我们需要需要对上述代码重新进行架构设计。
+
+首先，为了解决耦合问题，我们将“大脑”与“肢体”分离。Core 层只负责思考和决策，不负责显示；UI 层只负责渲染，不负责逻辑。两者之间不能直接调用，必须通过事件（Event） 或 消息（Message） 进行通信。这样，Core 层就不再依赖于 console.log，而是发布一个 MessageUpdated 事件，无论是 TUI 还是 Web UI，监听到这个事件后自行决定如何渲染。
+
+其次，为了解决阻塞问题，我们将同步的 while 循环改为异步的事件驱动模型。AI 的思考、工具的执行、文件的读写，都被抽象为系统中的异步任务。
+
+最后，为了解决易失性，我们需要引入一个持久化的基础设施层（Infra），实时将内存中的状态同步到硬盘上。
+
+这就自然演化出了 OpenCode 的分层架构。它不再是一个简单的脚本，而更像是一个运行在本地的微型操作系统。
+
+从底层基础设施到顶层用户界面，OpenCode 共分为 5 个核心层次：
 
 ```mermaid
 graph TB
-    subgraph UI["用户界面层 (UI Layer)"]
-        TUI[TUI Terminal<br/>OpenTUI + SolidJS]
-        WebApp[Web App<br/>React + Vite]
-        Desktop[Desktop<br/>Tauri]
-        VSCode[VSCode Extension<br/>Extension API]
-    end
-    
-    subgraph Comm["通信层 (Communication)"]
-        HTTP[HTTP Server<br/>Hono]
-        RPC[RPC Worker<br/>70行实现]
-        SSE[SSE Events<br/>实时推送]
-        WS[WebSocket<br/>双向通信]
-    end
-    
-    subgraph Core["核心业务层 (Core Layer)"]
-        Session[Session<br/>会话管理]
-        Agent[Agent<br/>代理系统]
-        Permission[Permission<br/>权限控制]
-        EventBus[EventBus<br/>事件总线<br/>30+ 事件类型]
-        Message[Message<br/>消息处理]
-        Tool[Tool<br/>工具系统]
-        Question[Question<br/>交互问答]
-    end
-    
-    subgraph Infra["基础设施层 (Infrastructure)"]
-        Storage[Storage<br/>存储抽象]
-        FileWatch[FileWatcher<br/>文件监控]
-        Snapshot[Snapshot<br/>快照系统]
-        Config[Config<br/>配置系统]
-        Instance[Instance<br/>实例管理]
-        Scheduler[Scheduler<br/>定时任务]
-    end
-    
-    subgraph Ext["扩展层 (Extension)"]
-        LSP[LSP<br/>15+ 语言服务器]
-        MCP[MCP<br/>模型上下文协议]
-        Plugin[Plugin<br/>插件系统]
-        Skill[Skill<br/>技能系统]
-        Command[Command<br/>命令系统]
-        Worktree[Worktree<br/>沙盒管理]
-    end
-    
-    subgraph AI["AI 提供商层 (AI Provider)"]
-        Provider[Provider 抽象层<br/>@ai-sdk]
-        OpenAI[OpenAI]
-        Anthropic[Anthropic]
-        Google[Google]
-        Others[... 20+ 提供商]
-    end
-    
-    UI --> Comm
-    Comm --> Core
-    Core --> EventBus
-    EventBus --> Infra
-    Core --> Ext
-    Ext --> AI
-    Infra --> AI
+
+%% ===== Global Compact Style =====
+classDef ui fill:#F3F6FB,stroke:#4A6FA5,color:#1F2A44
+classDef comm fill:#F7F9F5,stroke:#6B8E23,color:#2F3B1F
+classDef core fill:#FFF6E5,stroke:#C47A00,stroke-width:1.5px,color:#4A2E00
+classDef infra fill:#F5F5F5,stroke:#666666,color:#222222
+classDef ext fill:#F0F7F7,stroke:#2E8B8B,color:#083A3A
+classDef ai fill:#F9F0F5,stroke:#8B3A62,color:#3A1024
+
+%% ================= UI =================
+subgraph UI["用户界面层 (UI Layer)"]
+    direction TB
+    TUI[TUI Terminal<br/>OpenTUI + SolidJS]:::ui
+    WebApp[Web App<br/>SolidJS + Vite]:::ui
+    Desktop[Desktop<br/>Tauri]:::ui
+    VSCode[VSCode Extension<br/>Extension API]:::ui
+end
+
+%% ================= Comm =================
+subgraph Comm["通信层 (Communication)"]
+    direction TB
+    HTTP[HTTP Server<br/>Hono]:::comm
+    RPC[RPC Worker]:::comm
+    SSE[SSE Events<br/>实时推送]:::comm
+    WS[WebSocket<br/>双向通信]:::comm
+end
+
+%% ================= Core =================
+subgraph Core["核心业务层 (Core Layer)"]
+    direction TB
+    Session[Session<br/>会话管理]:::core
+    Agent[Agent<br/>代理系统]:::core
+    Permission[Permission<br/>权限控制]:::core
+    Message[Message<br/>消息处理]:::core
+    Question[Question<br/>交互问答]:::core
+    Tool[Tool<br/>工具系统]:::core
+    EventBus[EventBus<br/>事件总线<br/>30+ 事件类型]:::core
+end
+
+%% ================= Infra =================
+subgraph Infra["基础设施层 (Infrastructure)"]
+    direction TB
+    Storage[Storage<br/>存储抽象]:::infra
+    FileWatch[FileWatcher<br/>文件监控]:::infra
+    Snapshot[Snapshot<br/>快照系统]:::infra
+    Config[Config<br/>配置系统]:::infra
+    Instance[Instance<br/>实例管理]:::infra
+    Scheduler[Scheduler<br/>定时任务]:::infra
+end
+
+%% ================= Ext =================
+subgraph Ext["扩展层 (Extension)"]
+    direction TB
+    LSP[LSP<br/>15+ 语言服务器]:::ext
+    MCP[MCP<br/>模型上下文协议]:::ext
+    Plugin[Plugin<br/>插件系统]:::ext
+    Skill[Skill<br/>技能系统]:::ext
+    Command[Command<br/>命令系统]:::ext
+    Worktree[Worktree<br/>沙盒管理]:::ext
+end
+
+%% ================= AI =================
+subgraph AI["AI 提供商层 (AI Provider)"]
+    direction TB
+    Provider[Provider 抽象层<br/>@ai-sdk]:::ai
+    OpenAI[OpenAI]:::ai
+    Anthropic[Anthropic]:::ai
+    Google[Google]:::ai
+    Others[... 20+ 提供商]:::ai
+end
+
+%% ================= Relations =================
+UI --> Comm --> Core
+Core --> Infra
+Core --> Ext
+Infra --> AI
+Ext --> AI
+
 ```
 
 ### 架构层次说明
 
-
 **1. 用户界面层 (UI Layer)**
-- **职责**：提供多端用户交互界面
-- **技术栈**：
-  - TUI: OpenTUI + SolidJS（终端界面）
-  - Web: React + Vite（浏览器界面）
-  - Desktop: Tauri（桌面应用）
-  - VSCode: Extension API（编辑器集成）
-- **特点**：响应式设计，实时更新，跨平台支持
+- **职责**：作为系统的“皮肤”，负责呈现信息和接收指令。
+- **演进思考**：为了支持“一次编写，多端运行”，我们将 TUI、Web、Desktop 视为平等的消费者。注意这里我们选用了 SolidJS 来构建 TUI，这是为了在终端中也能获得现代前端框架的组件化开发体验。
 
 **2. 通信层 (Communication)**
-- **职责**：连接前端和后端，处理数据传输
-- **技术栈**：
-  - HTTP Server: Hono（轻量级 Web 框架）
-  - RPC: 自研 70 行 RPC 实现（Worker 通信）
-  - SSE: Server-Sent Events（服务器推送）
-  - WebSocket: 双向实时通信
-- **特点**：低延迟，支持流式响应，自动重连
+- **职责**：连接前端和后端，处理数据传输。
+- **演进思考**：由于 UI 层与 Core 层完全分离，我们需要一种高效的通信机制。对于 Web 端，我们使用 Hono 提供 HTTP 接口；对于 TUI 内部的 Worker 通信，我们实现了轻量级的 RPC。这一层确保了 Core 层永远不需要知道“谁在调用我”。
 
 **3. 核心业务层 (Core Layer)**
-- **职责**：实现核心业务逻辑
+- **职责**：系统的“大脑”，实现核心业务逻辑。
 - **关键模块**：
-  - Session: 会话生命周期管理
-  - Agent: AI 代理配置和执行
-  - Permission: 细粒度权限控制
-  - EventBus: 模块间解耦通信（30+ 事件类型）
-  - Message: 消息存储和处理
-  - Tool: 工具注册和执行
-  - Question: 用户交互问答
-- **特点**：事件驱动，松耦合，易扩展
+    - **EventBus**：整个架构的血管。通过事件总线，Session 模块可以发布 `MessageCreated` 事件，而完全不需要知道 Permission 模块正在监听这个事件。
+    - **Agent & Tool**：负责实际的推理和执行。
 
 **4. 基础设施层 (Infrastructure)**
-- **职责**：提供底层能力支撑
-- **关键模块**：
-  - Storage: 统一存储接口（JSON 文件）
-  - FileWatcher: 跨平台文件监控
-  - Snapshot: Git-based 快照系统
-  - Config: 配置加载和验证
-  - Instance: 项目实例隔离
-  - Scheduler: 定时任务调度
-- **特点**：跨平台，高性能，自动清理
+- **职责**：系统的“地基”，提供底层能力支撑。
+- **演进思考**：为了解决状态易失性，Storage 模块将所有状态持久化为 JSON 文件；FileWatcher 则像神经末梢一样，感知文件系统的每一次微小变动，让 AI 能够“看见”代码的修改。
 
 **5. 扩展层 (Extension)**
-- **职责**：提供可扩展能力
-- **关键模块**：
-  - LSP: 语言服务器集成（15+ 语言）
-  - MCP: Model Context Protocol 支持
-  - Plugin: 插件系统（工具/认证）
-  - Skill: 知识库管理
-  - Command: 自定义命令
-  - Worktree: Git 沙盒隔离
-- **特点**：标准化协议，生态互通
-
-**6. AI 提供商层 (AI Provider)**
-- **职责**：统一 AI 模型调用接口
-- **技术栈**：@ai-sdk（Vercel AI SDK）
-- **支持提供商**：OpenAI, Anthropic, Google, Mistral, Cohere, Groq 等 20+
-- **特点**：提供商无关，流式响应，工具调用
+- **职责**：提供可扩展能力。
+- **演进思考**：一个封闭的系统是没有生命力的。通过 LSP 和 MCP（Model Context Protocol）协议，我们将 OpenCode 变成了一个开放平台，能够接入外部的工具和知识库。
 
 ---
 
 ## 1.0.2 核心设计哲学
-
 OpenCode 的架构设计遵循 5 大核心理念，这些理念贯穿整个系统设计。
 
 ### 1. 事件驱动架构 (Event-Driven Architecture)
 
-**设计理念**：模块间通过事件解耦，发布者和订阅者互不依赖。
+在很多传统的 CLI 工具中，模块间的调用是直接的（Direct Call）。例如，当 AI 生成代码后，直接调用文件写入函数。这种紧耦合导致了扩展极其困难。
 
+**设计理念**：模块间通过事件解耦，发布者和订阅者互不依赖。
 **代码示例**：
 
 ```typescript
@@ -189,8 +533,8 @@ using unsub = Bus.subscribe(Event.Updated, handler)
 
 ### 2. 实例隔离 (Instance Isolation)
 
+在开发多项目并行的工具时，全局变量（Global State）是万恶之源。如果用户同时打开两个终端分别操作两个项目，全局变量会导致状态冲突。
 **设计理念**：每个项目目录对应一个独立实例，状态完全隔离，资源自动清理。
-
 **代码示例**：
 
 ```typescript
@@ -417,7 +761,7 @@ $ opencode tui
 **代码示例**：
 
 ```typescript
-// 默认配置
+// 默认配置（内部实现）
 const defaults = {
   model: "anthropic/claude-3-5-sonnet-20241022",
   agent: "build",
@@ -429,28 +773,33 @@ const defaults = {
 }
 
 // 用户只需配置差异
-// .opencode/opencode.md
----
-model: "openai/gpt-4"
-permission:
-  edit:
-    "*.ts": "allow"  # TypeScript 文件自动允许编辑
----
+// .opencode/opencode.jsonc
+{
+  // JSONC 支持注释
+  "model": "openai/gpt-4",
+  "permission": {
+    "edit": {
+      "*.ts": "allow"  // TypeScript 文件自动允许编辑
+    }
+  }
+}
 
-// 最终配置 = 默认配置 + 用户配置
-const finalConfig = merge(defaults, userConfig)
+// 最终配置 = 远程配置 + 全局配置 + 项目配置（按优先级合并）
+const finalConfig = mergeConfigConcatArrays(remoteConfig, globalConfig, projectConfig)
 ```
 
 **约定示例**：
 
 | 约定 | 说明 | 覆盖方式 |
 |------|------|---------|
-| 配置文件路径 | `.opencode/opencode.md` | 环境变量 `OPENCODE_CONFIG` |
+| 配置文件路径 | `opencode.jsonc` 或 `opencode.json` | 环境变量 `OPENCODE_CONFIG` |
+| 配置目录 | `.opencode/opencode.jsonc` | 环境变量 `OPENCODE_CONFIG_DIR` |
 | 存储目录 | `~/.opencode/storage/` | 配置项 `storage.path` |
 | 默认 Agent | `build` | 配置项 `agent` |
 | 默认模型 | Claude 3.5 Sonnet | 配置项 `model` |
-| 工具目录 | `.opencode/tool/*.ts` | 配置项 `tool.directories` |
-| 技能目录 | `.opencode/skill/**/SKILL.md` | 配置项 `skill.directories` |
+| Agent 定义 | `.opencode/agent/**/*.md` | 配置项 `agent` |
+| Command 定义 | `.opencode/command/**/*.md` | 配置项 `command` |
+| Plugin 定义 | `.opencode/plugin/*.{ts,js}` | 配置项 `plugin` |
 
 **优势**：
 - ✅ **开箱即用**：无需配置即可运行
@@ -464,20 +813,21 @@ const finalConfig = merge(defaults, userConfig)
 - ⚠️ **版本兼容**：默认值变更需要考虑向后兼容
 
 **最佳实践**：
-```typescript
-// 使用环境变量覆盖约定
+```bash
+# 使用环境变量覆盖约定
 export OPENCODE_MODEL="openai/gpt-4"
-export OPENCODE_STORAGE_PATH="/custom/path"
+export OPENCODE_CONFIG="/path/to/custom/config.jsonc"
 
-// 使用配置文件覆盖约定
-// opencode.md
----
-model: "openai/gpt-4"
-storage:
-  path: "/custom/path"
----
+# 使用配置文件覆盖约定
+# opencode.jsonc
+{
+  "model": "openai/gpt-4",
+  "storage": {
+    "path": "/custom/path"
+  }
+}
 
-// 使用命令行参数覆盖约定
+# 使用命令行参数覆盖约定
 opencode session new --model "openai/gpt-4"
 ```
 
