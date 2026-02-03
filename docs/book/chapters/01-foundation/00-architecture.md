@@ -662,28 +662,33 @@ OpenCode 的技术栈选型经过深思熟虑，每个技术都有明确的理�
 sequenceDiagram
     participant User as 用户
     participant UI as 用户界面<br/>(TUI/Web/VSCode)
-    participant Comm as 通信层<br/>(HTTP/RPC)
+    participant Worker as Worker<br/>(RPC 通信)
+    participant Server as 服务器<br/>(Hono HTTP)
     participant Session as Session<br/>会话管理
+    participant Auth as Auth<br/>认证系统
     participant Permission as Permission<br/>权限控制
-    participant LLM as LLM<br/>AI 提供商
+    participant Provider as Provider<br/>AI 提供商
     participant Tool as Tool<br/>工具系统
     participant Bus as EventBus<br/>事件总线
     participant Storage as Storage<br/>存储系统
     
     User->>UI: 输入提示词<br/>"创建 README.md"
-    UI->>Comm: HTTP POST /session/prompt
-    Comm->>Session: session.prompt()
+    UI->>Worker: RPC 调用<br/>/session/prompt
+    Worker->>Server: HTTP POST /session/prompt
+    Server->>Session: session.prompt()
     
-    Session->>Permission: 检查权限
-    Permission-->>Session: 权限通过
+    Session->>Permission: 加载会话权限配置
+    Permission-->>Session: 权限规则
     
-    Session->>LLM: streamText()
-    LLM-->>Session: 流式响应<br/>"我将创建 README.md"
-    Session->>Bus: publish(Message.Updated)
-    Bus->>UI: SSE 推送更新
+    Session->>Provider: 调用 AI 模型<br/>(内部获取 Auth)
+    Provider->>Auth: 获取 API 凭证
+    Auth-->>Provider: API Key/Token
+    Provider-->>Session: 流式响应<br/>"我将创建 README.md"
+    Session->>Bus: publish(MessageV2.Event.Updated)
+    Bus->>UI: Event 事件推送
     UI-->>User: 实时显示响应
     
-    LLM-->>Session: 工具调用<br/>write(path: "README.md")
+    Provider->>Session: 工具调用请求<br/>write(path: "README.md")
     Session->>Permission: 检查 write 权限
     Permission->>UI: 询问用户
     UI-->>User: 显示权限请求
@@ -692,121 +697,309 @@ sequenceDiagram
     Permission-->>Session: 权限通过
     
     Session->>Tool: tool.execute()
+    Tool->>Tool: ToolRegistry 执行
     Tool->>Storage: 写入文件
     Storage-->>Tool: 写入成功
-    Tool->>Bus: publish(File.Edited)
-    Bus->>UI: SSE 推送文件变更
+    Tool->>Bus: publish(File.Event.Edited)
+    Bus->>UI: Event 事件推送
     Tool-->>Session: 工具执行结果
     
-    Session->>LLM: 继续对话
-    LLM-->>Session: "README.md 已创建"
+    Session->>Provider: 继续对话
+    Provider-->>Session: "README.md 已创建"
     Session->>Storage: 保存会话状态
-    Session->>Bus: publish(Session.Updated)
-    Bus->>UI: SSE 推送完成
+    Session->>Bus: publish(Event.Updated)
+    Bus->>UI: Event 事件推送
     UI-->>User: 显示完成状态
 ```
 
 ### 关键流程说明
 
-**1. 用户输入 → 会话处理**
-```typescript
-// 用户在 TUI 中输入提示词
-const input = "创建 README.md 文件"
+从用户在终端或浏览器中输入一段文字开始，到最终看到 AI 的完整响应为止，系统内部经历了一系列精心编排的协作流程。本节将以一次完整的对话过程为主线，跟踪数据在系统中的流动轨迹，揭示各组件如何协同工作完成用户的请求。这种流程化的视角能够帮助读者建立对系统整体运作机制的理解，而不仅仅是孤立掌握各个模块的功能。
 
-// TUI 发送 HTTP 请求
-await fetch("/session/prompt", {
+值得注意的是，OpenCode 的实际实现与表面看到的 HTTP API 有显著差异。TUI 客户端通过 Worker 和 RPC 机制与服务器通信，而非简单的 HTTP 请求；认证主要用于 AI Provider 的 API 访问控制，而非请求级别的身份验证；流式响应通过 SDK 客户端订阅事件流实现，而非直接的 SSE 连接。理解这些实现细节对于准确把握系统架构至关重要。
+
+---
+
+#### 第一阶段：请求入口与 RPC 通信
+
+当用户在 TUI 界面输入「帮我创建一个 README.md 文件」这样的请求时，这条消息首先被发送到 TUI 的 Worker 进程。TUI 采用双进程架构：主进程负责 UI 渲染和用户交互，Worker 进程负责与服务器的通信。用户的输入被包装为一个 RPC 调用，通过 Worker 的 `fetch` 桥接函数发送到服务器。
+
+Worker 进程中的 `fetch` 函数并非真正的网络请求，而是一个 RPC 调用。它将请求参数序列化后，通过进程间通信发送给服务器进程。服务器处理完成后，结果再通过相同的渠道返回给 Worker。这种架构设计有几个重要优势：首先是跨平台兼容性，TUI 可以运行在各种终端环境中而不受网络限制；其次是安全性，敏感的认证信息可以在 Worker 内部处理而不暴露给 UI 层；第三是稳定性，即使 UI 层发生崩溃，Worker 和会话状态可以保持完整。
+
+在服务器端，Hono 框架接收到的请求实际上是来自 Worker 的 RPC 调用。Hono 路由层将 `/session/prompt` 路径的请求分发到 SessionRoutes 模块处理。值得注意的是，TUI 的 `/session/prompt` 端点返回的是 JSON 格式的完整响应，而非 SSE 流式数据。真正的流式更新通过独立的事件订阅机制实现。
+
+认证在 OpenCode 中主要用于 AI Provider 的 API 访问控制，而非请求级别的身份验证。Auth 模块管理着各种 AI 服务商的认证信息，包括 OAuth 令牌、API Key 等。当 LLM 模块需要调用 AI 服务时，会从 Auth 模块获取相应的认证凭证。每个 Provider（Anthropic、OpenAI、Google 等）都有独立的认证配置，系统支持同时配置多个 Provider 并在它们之间无缝切换。
+
+---
+
+#### 第二阶段：会话创建与上下文准备
+
+认证通过后，请求正式进入会话处理流程。Session 模块是整个系统的核心协调者，它负责维护对话的完整生命周期。对于一个新会话，系统会创建一个唯一的 Session ID，这个 ID 采用 ULID 算法生成，保证全局唯一性和时间有序性。Session ID 成为贯穿整个对话过程的关联键，任何后续的操作（AI 调用、工具执行、权限检查）都会携带这个标识符。
+
+会话对象不仅包含一个唯一的标识符，还维护着对话所需的所有状态信息。MessageV2 类型的消息历史记录了从对话开始到现在所有的用户输入和 AI 响应；系统提示词定义了 AI 的角色定位和行为规范，从 session/system.ts 文件加载；工具清单列出了 AI 可以调用的所有工具及其描述定义；配置参数控制着对话的各种行为选项。这些信息共同构成了 AI 理解对话上下文的基础。
+
+会话处理由 SessionProcessor 模块负责协调。Processor 实现了主处理循环，不断接收 AI 的响应并决定下一步操作。当 Processor 创建时，它首先初始化一个消息对象来存储 AI 的响应内容，然后进入处理循环。在每次循环中，Processor 调用 LLM.stream 方法发起 AI 调用，然后将 AI 的输出逐步追加到消息中。
+
+会话创建完成后，系统会为这次对话分配状态。SessionStatus 模块跟踪每个会话的当前状态：空闲（Idle）表示等待用户输入，处理中（busy）表示正在响应用户请求。状态变化通过 EventBus 广播给所有订阅者，UI 层据此更新界面显示，告诉用户当前对话是正在进行还是已经完成。
+
+---
+
+#### 第三阶段：AI 调用与流式响应
+
+进入处理阶段后，会话模块首先构建发送给 AI 模型的请求消息。这个请求由三部分组成：系统提示词定义了 AI 的行为准则和专业知识边界；历史消息提供了对话的上下文背景，让 AI 能够理解对话的连续性；当前用户输入则是这一次交互的核心内容。消息构建完成后，系统会从配置中读取用户偏好的 AI 模型信息，准备发起实际的 API 调用。
+
+AI 调用的实际执行由 LLM 模块负责。LLM 模块封装了与各种 AI Provider 的交互逻辑，它通过 Provider 模块获取具体的模型实例和调用接口。Provider 模块支持二十余家 AI 服务商，包括 Anthropic、OpenAI、Google、DeepSeek 等，每个服务商都有独立的适配器实现。LLM 模块调用 `streamText` 函数发起流式请求，这个函数来自 ai SDK，提供了统一的流式响应处理接口。
+
+发起 AI 调用后，系统开始处理流式响应。`streamText` 返回一个可迭代对象，包含多种类型的事件：start 事件表示流式响应开始；text-delta 事件包含新生成的文本片段；tool-call 事件表示 AI 请求调用工具；done 事件表示响应完成。Processor 遍历这些事件，根据事件类型执行相应的处理逻辑。
+
+流式响应的处理采用了事件驱动模式。Processor 监听 LLM 返回的完整流式事件，根据事件类型执行不同操作。对于文本增量事件，Processor 将文本追加到当前消息的对应部分；对于工具调用事件，Processor 暂停文本处理，转而处理工具调用逻辑；对于完成事件，Processor 将消息保存到会话历史，准备下一轮处理或结束会话。
+
+---
+
+#### 第四阶段：工具调用与权限检查
+
+当 AI 在响应中请求调用某个工具时（比如写入文件、执行命令），系统会进入一个特殊的处理流程。Processor 检测到 tool-call 事件后，首先从工具注册表（ToolRegistry）中查找对应的工具实现。工具注册表维护着所有可用工具的映射，每个工具都有唯一的 ID 和初始化函数。
+
+工具执行前必须通过权限检查。PermissionNext 模块实现了 OpenCode 的权限控制系统，它基于规则匹配来决定是否允许特定操作。每个权限规则包含三个要素：操作类型（permission，如 write、read、execute）、文件路径模式（pattern，支持通配符匹配）、执行动作（action，可以是 allow、deny 或 ask）。权限检查遵循优先级规则：具体路径的规则优先于通用路径的规则，先出现的规则优先于后出现的规则。
+
+如果权限规则配置为 ask 模式，系统需要等待用户确认才能继续执行。Processor 调用 `ctx.ask` 方法发布权限请求事件。UI 层订阅了这个事件后，会显示权限确认对话框，向用户解释 AI 想要执行什么操作以及可能的风险。用户可以选择允许、拒绝或仅允许这一次操作。这个过程是异步的，Processor 会暂停工具调用流程，等待用户决策。
+
+权限检查通过后，工具进入实际执行阶段。每个工具都实现了统一的接口规范，包含初始化函数和执行函数。初始化函数负责加载工具的描述信息和参数模式定义；执行函数接收参数和上下文，执行具体操作并返回结果。工具执行完成后，结果被格式化为标准格式，包含执行状态、输出文本和可选的附件信息。
+
+---
+
+#### 第五阶段：结果整合与状态持久化
+
+工具执行完成后，结果被返回给 Processor。Processor 将工具结果格式化为 ToolPart 类型的消息片段，追加到当前助手消息中。工具结果随后被添加到消息历史，使得 AI 在后续响应中可以引用工具的执行结果。这个过程会循环进行：AI 可能基于工具结果继续请求调用其他工具，或者决定结束对话返回最终响应。
+
+当 AI 最终完成所有处理后，Processor 会收到 done 事件。这个事件表明 AI 已经生成了完整的响应，不再有后续的文本输出或工具调用。Processor 将最终消息保存到会话历史，然后将会话状态更新为空闲。
+
+**事件系统协同工作**：在整个处理过程中，不同的组件会发布不同类型的事件来同步状态：
+
+1. **消息更新事件（MessageV2.Event.Updated）**：当 AI 生成新的响应内容时，Session 模块通过 `Session.updateMessage()` 方法将消息保存到存储，并发布 `MessageV2.Event.Updated` 事件。这个事件携带完整的消息信息，通知所有订阅者（特别是 UI 层）有新的消息内容需要显示。UI 层订阅这个事件后，会实时更新对话界面，展示 AI 的最新响应。
+
+2. **文件编辑事件（File.Event.Edited）**：当工具执行成功修改了文件系统时，工具模块（如 write.ts、edit.ts）会发布 `File.Event.Edited` 事件。这个事件携带被编辑文件的路径信息，触发文件监控器和 UI 的同步更新。文件监控器收到这个事件后，会重新读取文件内容并更新符号索引；UI 层收到这个事件后，会刷新文件浏览器等组件的显示。
+
+3. **会话更新事件（Event.Updated）**：当会话的元数据发生变化（如状态变更、标题修改、分享设置更新）时，Session 模块会发布 `Event.Updated` 事件。这个事件携带更新后的会话信息，用于通知所有订阅者会话状态已变化。在对话结束时，Processor 发布这个事件来通知 UI 会话已完成，UI 随即更新界面显示状态。
+
+最后，Processor 将会话已更新的事件发布到 EventBus，通知所有订阅者会话状态发生了变化。
+
+状态持久化由 Storage 模块负责，采用混合存储策略。核心状态数据（如会话信息、消息历史）使用 SQLite 数据库存储在本地文件系统；临时状态和缓存数据存储在内存中以减少 IO 开销。持久化采用异步写入机制，不会阻塞主处理流程。存储路径在 Global.Path.data 目录下按项目分组织，每个会话都有独立的存储文件。
+
+会话恢复机制允许用户中断后继续之前的对话。当用户重新打开会话时，系统从数据库加载会话信息和完整消息历史。Processor 根据消息历史重建对话上下文，包括所有之前的 AI 响应和工具调用结果。这种完整的状态恢复能力使得用户可以无缝切换设备或会话中断后继续工作。
+
+---
+
+#### 第六阶段：事件广播与 UI 更新
+
+在整个处理过程中，EventBus 扮演着连接各组件的神经系统角色。EventBus 支持两种事件传递模式：内存事件和全局事件。内存事件在单个进程内通过订阅者列表直接传递，适用于组件间的紧耦合通信；全局事件通过 GlobalBus 跨进程广播，适用于 Worker 和主进程间的通信。
+
+TUI 客户端通过 SDK 客户端订阅服务器的事件流。SDK 客户端创建 EventSource 来接收服务器推送的事件。实际的事件流订阅通过 `sdk.event.subscribe()` 方法实现，这个方法返回一个异步迭代器，客户端通过 `for await` 循环接收事件。每个事件都有类型标识符和属性数据，客户端根据事件类型执行相应的 UI 更新逻辑。
+
+事件队列机制优化了 UI 更新性能。客户端维护一个事件队列，新收到的事件先进入队列而不是立即处理。如果两次事件的时间间隔小于 16 毫秒，客户端会将后续事件批量处理，避免频繁的 UI 重渲染。如果间隔较长，则立即处理以保持响应性。这种批量更新策略显著减少了 UI 渲染次数，提升了整体性能。
+
+事件系统还支持通配符订阅模式。日志组件可以订阅所有事件来记录完整的操作历史；审计组件可以订阅特定领域的所有事件来生成合规报告；调试组件可以订阅带模式匹配的事件来追踪特定类型的操作。这种灵活性使得系统可以在不修改发布者代码的情况下，添加新的事件消费者。
+
+---
+
+#### 完整代码流程
+
+为了将上述流程串联起来，让我们通过一个完整的代码示例来跟踪从输入到输出的全过程。这个示例展示了 TUI 客户端发送请求、服务器处理、AI 调用、工具执行、结果返回的完整链路：
+
+```typescript
+// 步骤1：用户在TUI中输入请求
+const userInput = "创建一个 README.md 文件"
+
+// 步骤2：TUI Worker 通过 RPC 发送请求到服务器
+// 实际使用的是 RPC 调用而非直接 HTTP 请求
+const workerFetch = createWorkerFetch(rpcClient)
+const response = await workerFetch("/session/prompt", {
   method: "POST",
+  headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
-    sessionID: "sess_abc123",
-    content: input
-  })
+    content: userInput,
+    attachments: [],
+    context: { workspace: currentProjectPath },
+  }),
 })
 
-// Session 处理请求
-await Session.prompt({
-  sessionID: "sess_abc123",
-  content: input
-})
-```
-
-**2. 权限检查**
-```typescript
-// 在执行敏感操作前检查权限
-await Permission.ask({
-  permission: "write",
-  patterns: ["README.md"],
-  sessionID: "sess_abc123"
-})
-
-// 如果配置为 "ask"，会弹出确认对话框
-// 如果配置为 "allow"，自动通过
-// 如果配置为 "deny"，抛出异常
-```
-
-**3. AI 流式响应**
-```typescript
-// 调用 AI 提供商
-const stream = await streamText({
-  model: anthropic("claude-3-5-sonnet-20241022"),
-  messages: [...history, { role: "user", content: input }],
-  tools: { write: WriteTool }
-})
-
-// 处理流式事件
-for await (const event of stream.fullStream) {
-  switch (event.type) {
-    case "text-delta":
-      // 实时显示文本
-      Bus.publish(Message.Event.PartUpdated, {
-        text: event.textDelta
-      })
-      break
+// 步骤3：Hono 路由层接收请求并分发
+const SessionRoutes = new Hono()
+  .post("/prompt", async (c) => {
+    const { sessionID, content, context } = await c.req.json()
     
-    case "tool-call":
-      // 执行工具调用
-      await Tool.execute(event.toolName, event.args)
+    // 验证请求参数
+    const validated = SessionPrompt.PromptInput.parse({ sessionID, ...body })
+    
+    // 处理提示词请求
+    const result = await SessionPrompt.prompt(validated)
+    
+    // 返回 JSON 格式的完整响应
+    return c.json(result)
+  })
+
+// 步骤4：SessionPrompt 处理请求，创建或获取会话
+export async function prompt(input: PromptInput) {
+  // 获取或创建会话
+  const session = input.sessionID 
+    ? await Session.get(input.sessionID)
+    : await Session.create({ directory: input.context?.workspace })
+  
+  // 创建用户消息
+  const userMessage = await MessageV2.User.create({
+    sessionID: session.id,
+    content: input.content,
+  })
+  
+  // 启动处理器处理对话
+  const processor = await SessionProcessor.create({
+    assistantMessage: await MessageV2.Assistant.create({
+      sessionID: session.id,
+    }),
+    sessionID: session.id,
+    model: input.model,
+    abort: input.abortSignal,
+  })
+  
+  // 执行处理循环
+  const result = await processor.process({
+    user: userMessage,
+    messages: await buildMessages(session),
+    tools: await loadTools(),
+    system: loadSystemPrompt(),
+    abort: input.abortSignal,
+  })
+  
+  return result
+}
+
+// 步骤5：Processor 协调 LLM 调用
+const processor = await SessionProcessor.create({...})
+await processor.process(async (streamInput) => {
+  // 调用 LLM 流式接口
+  const stream = await LLM.stream(streamInput)
+  
+  // 遍历流式事件
+  for await (const event of stream.fullStream) {
+    switch (event.type) {
+      case "text-delta":
+        // 将文本增量追加到消息
+        await appendTextToMessage(event.textDelta)
+        // 发布事件通知 UI
+        Bus.publish(Message.Event.PartUpdated, {
+          sessionID: input.sessionID,
+          text: event.textDelta,
+        })
+        break
+        
+      case "tool-call":
+        // 发布工具调用事件
+        Bus.publish(Tool.Event.Requested, {
+          sessionID: input.sessionID,
+          toolName: event.toolName,
+          args: event.args,
+        })
+        
+        // 权限检查
+        const permission = await PermissionNext.check({
+          permission: event.toolName,
+          pattern: resolvePattern(event.args),
+          action: "ask",
+        })
+        
+        if (permission.action === "deny") {
+          return { success: false, error: "Permission denied" }
+        }
+        
+        if (permission.action === "ask") {
+          // 等待用户确认
+          await waitForUserConfirmation(permission)
+        }
+        
+        // 执行工具调用
+        const result = await Tool.execute(event.toolName, event.args, context)
+        
+        // 发布工具完成事件
+        Bus.publish(Tool.Event.Completed, {
+          sessionID: input.sessionID,
+          toolName: event.toolName,
+          result,
+        })
+        
+        return result
+        
+      case "done":
+        // 处理完成，保存消息
+        await saveMessage()
+        // 持久化会话状态
+        await Storage.saveSession(session)
+        // 发布会话更新事件
+        Bus.publish(Session.Event.Updated, { sessionID: session.id })
+        break
+    }
+  }
+})
+
+// 步骤6：TUI SDK 客户端订阅服务器事件流
+const sdk = createOpencodeClient({ baseUrl: serverUrl })
+
+// 订阅事件流用于 UI 更新
+for await (const event of sdk.event.subscribe({}, { signal: abort.signal })) {
+  switch (event.type) {
+    case "message.part.updated":
+      // 实时显示 AI 生成的文本
+      appendTextToChat(event.properties.text)
+      break
+    case "tool.requested":
+      // 显示工具调用请求
+      showToolExecuting(event.properties.toolName)
+      break
+    case "tool.completed":
+      // 显示工具执行结果
+      showToolResult(event.properties.result)
+      break
+    case "session.updated":
+      // 标记会话为完成
+      markAsCompleted()
       break
   }
 }
-```
 
-**4. 事件通知**
-```typescript
-// 工具执行后发布事件
-Bus.publish(File.Event.Edited, {
-  file: "README.md"
-})
+// 批量更新优化
+let eventQueue: Event[] = []
+let lastFlush = 0
 
-// 多个订阅者响应
-Bus.subscribe(File.Event.Edited, async (evt) => {
-  // 订阅者1：自动格式化
-  await formatFile(evt.properties.file)
-})
+function handleEvent(event: Event) {
+  eventQueue.push(event)
+  
+  // 如果距离上次批量处理不足 16ms，延迟处理
+  if (Date.now() - lastFlush < 16) {
+    setTimeout(flushEvents, 16)
+    return
+  }
+  
+  flushEvents()
+}
 
-Bus.subscribe(File.Event.Edited, async (evt) => {
-  // 订阅者2：更新文件树
-  await refreshFileTree()
-})
-```
-
-**5. 状态持久化**
-```typescript
-// 保存会话状态
-await Storage.write(
-  ["session", projectID, sessionID],
-  session
-)
-
-// 保存消息内容
-await Storage.write(
-  ["message", sessionID, messageID],
-  message
-)
+function flushEvents() {
+  if (eventQueue.length === 0) return
+  
+  const events = eventQueue
+  eventQueue = []
+  lastFlush = Date.now()
+  
+  // 批量更新 UI
+  batch(() => {
+    for (const event of events) {
+      processEvent(event)
+    }
+  })
+}
 ```
 
 ---
 
-## 1.0.5 前置知识清单
+通过这个完整的流程追踪，我们可以看到一次用户请求如何在系统各组件之间流转：从 TUI 客户端的 Worker 进程通过 RPC 机制发送请求，服务器端 Hono 路由层接收并分发请求，Session 模块协调会话状态，LLM 模块调用 AI 服务，Processor 处理器协调工具执行，最终通过 SDK 客户端的事件订阅机制将更新推送给 UI 层。每个阶段都清晰可见，各组件的协作关系一目了然。这种流程化的视角帮助读者建立对系统整体架构的直觉理解。
 
 在开始学习本书之前，请评估你的知识储备。
 
