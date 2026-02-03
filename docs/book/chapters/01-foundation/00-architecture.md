@@ -528,44 +528,8 @@ const result = await Instance.provide({
 ```
 在 OpenCode的实际实现中， Instance.provide() 是进入项目上下文的入口点，它负责：1) 根据 directory 参数查找或缓存对应的实例；2) 利用 AsyncLocalStorage 在回调执行期间提供 Instance.directory 、 Instance.state() 等 API 的上下文访问；3) 利用 Node.js 的异步上下文隔离能力，确保不同项目实例的状态互不干扰。
 
-┌─────────────────────────────────────────────────────────────┐
-│                     项目实例隔离机制                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    │
-│  │  Project A  │    │  Project B  │    │  Project C  │    │
-│  │ /path/to/a  │    │ /path/to/b  │    │ /path/to/c  │    │
-│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘    │
-│         │                   │                   │           │
-│         ▼                   ▼                   ▼           │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Global Instance Cache                   │   │
-│  │   Map<directory, Promise<Context>>                   │   │
-│  │                                                     │   │
-│  │   "/path/to/a" → Promise<Context_A>                 │   │
-│  │   "/path/to/b" → Promise<Context_B>                 │   │
-│  │   "/path/to/c" → Promise<Context_C>                 │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              AsyncLocalStorage Context               │   │
-│  │                                                     │   │
-│  │   Project A 上下文: Instance.directory = A路径      │   │
-│  │   Project B 上下文: Instance.directory = B路径      │   │
-│  │   Project C 上下文: Instance.directory = C路径      │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              State.create()                         │   │
-│  │                                                     │   │
-│  │   recordsByKey: Map<string, Map<init_fn, Entry>>  │   │
-│  │   outer_key = root() (返回项目路径的函数)          │   │
-│  │   inner_key = init_fn (初始化函数引用)             │   │
-│  │   首次访问时: state = init_fn()                    │   │
-│  │   后续访问时: 返回缓存的 state                     │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+![Instance Isolation](../assets/00-architecture-项目实例隔离机制.png)
+
 Opencode 没有在启动时一次性创建所有状态。它采用了**延迟初始化（Lazy Initialization）**的策略。用户只有在真正调用 getSessionManager() 时，系统才会创建状态。
 开发者做出这个决定有几个原因。首先，这种做法能提高内存效率。在大型开发环境中，用户虽然可能打开多个项目，但他们通常只操作其中一两个。延迟初始化能避免不必要的内存占用。其次，这种策略能提升启动速度。如果系统即时初始化所有状态，这会显著增加冷启动时间，进而影响用户体验。第三，这涉及上下文绑定。Instance.state() 返回的函数在执行时，程序会通过 root() 获取当前 Instance.directory。这能确保状态与正确的项目关联。
 我们使用初始化函数本身作为 Map 的键。这种做法确保了不同模块之间的状态不会发生命名冲突，即使它们在同一个实例下。这个方案的优势在于实现简洁。它不需要额外的 ID 生成机制。但是，它的劣势在于函数引用作为键在序列化时可能会出问题。因此，该机制主要用于内存中的状态管理。对于需要持久化的状态，OpenCode 会使用显式的存储键（Storage Key）进行隔离。
@@ -671,6 +635,7 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Rules
 }
 ```
 
+
 ## 1.0.3 技术栈选型理由
 
 OpenCode 的技术栈选型经过深思熟虑，每个技术都有明确的理由和权衡。
@@ -679,87 +644,15 @@ OpenCode 的技术栈选型经过深思熟虑，每个技术都有明确的理�
 
 | 技术 | 选型理由 | 优势 | Trade-off |
 |------|---------|------|-----------|
-| **Bun** | 约 3-5x 快于 npm，原生 TypeScript | • 快速安装和执行<br/>• 内置测试框架<br/>• 原生 TypeScript | • 生态成熟度 < Node.js<br/>• 部分包不兼容 |
+| **Bun** | 约 3-5x 快于 npm，原生 TypeScript 支持 | • 快速安装和执行<br/>• 内置测试框架<br/>• 原生 TypeScript | • 生态成熟度 < Node.js<br/>• 部分包不兼容 |
 | **Turbo** | 增量构建，大幅提升大型项目 | • 智能缓存<br/>• 任务依赖管理<br/>• 并行执行 | • 配置复杂度增加<br/>• 学习曲线 |
 | **Zod** | 类型安全，运行时验证 | • 编译时 + 运行时双重保障<br/>• 自动生成类型<br/>• 详细错误信息 | • 学习成本<br/>• 轻微性能开销 |
 | **@ai-sdk** | 统一接口，20+ 提供商 | • 提供商无关<br/>• 流式响应<br/>• 工具调用支持 | • 抽象层性能损耗<br/>• 部分提供商特性受限 |
-| **OpenTUI** | 终端原生组件，高性能 | • 响应式更新<br/>• 组件化开发<br/>• 跨平台支持 | • 学习曲线陡峭<br/>• 生态较小 |
+| **OpenTUI** | 终端原生组件，高性能 | • 响应式更新<br/>• 组件化开发<br/>• 跨平台支持 | • 学习曲线陡峭<br/>• 生态较小且仍在开发中（非完全生产就绪） |
 | **SolidJS** | 细粒度响应式，小体积 | • 性能优异<br/>• 无虚拟 DOM<br/>• 体积小 | • 生态 < React<br/>• 社区较小 |
 | **Playwright** | 跨浏览器 E2E 测试 | • 多浏览器支持<br/>• 自动等待<br/>• 录制功能 | • 测试速度较慢<br/>• 资源占用高 |
 | **Hono** | 轻量级 Web 框架 | • 极快的路由<br/>• 边缘运行时支持<br/>• TypeScript 优先 | • 生态较新<br/>• 中间件较少 |
 
-### 为什么选择 Bun？
-
-```typescript
-// 性能对比（安装 50 个包，参考数据）
-npm install    // ~45 秒
-yarn install   // ~30 秒
-pnpm install   // ~20 秒
-bun install    // ~8 秒  ← 约 3-5x 提升
-
-// 原生 TypeScript 支持
-// 无需编译，直接运行
-bun run src/index.ts
-
-// 内置测试框架
-import { test, expect } from "bun:test"
-
-test("example", () => {
-  expect(1 + 1).toBe(2)
-})
-```
-
-### 为什么选择 Turbo？
-
-```json
-// turbo.json - 智能缓存和依赖管理
-{
-  "tasks": {
-    "build": {
-      "dependsOn": ["^build"],  // 先构建依赖包
-      "outputs": ["dist/**"],   // 缓存输出目录
-      "cache": true             // 启用缓存
-    }
-  }
-}
-
-// 性能对比（构建 10 个包，参考数据）
-// 首次构建
-npm run build    // ~120 秒
-turbo build      // ~120 秒
-
-// 二次构建（无变更）
-npm run build    // ~120 秒（重新构建）
-turbo build      // ~2 秒（使用缓存）← 约 60x 提升
-```
-
-### 为什么选择 @ai-sdk？
-
-```typescript
-// 统一接口，切换提供商只需改配置
-import { streamText } from "ai"
-import { anthropic } from "@ai-sdk/anthropic"
-import { openai } from "@ai-sdk/openai"
-
-// 使用 Anthropic
-const result = await streamText({
-  model: anthropic("claude-3-5-sonnet-20241022"),
-  messages: [{ role: "user", content: "Hello" }]
-})
-
-// 切换到 OpenAI，代码无需修改
-const result = await streamText({
-  model: openai("gpt-4"),
-  messages: [{ role: "user", content: "Hello" }]
-})
-
-// 支持 20+ 提供商
-// OpenAI, Anthropic, Google, Mistral, Cohere, Groq, 
-// Together AI, Fireworks, Perplexity, DeepSeek...
-```
-
-
----
 
 ## 1.0.4 数据流向图
 
