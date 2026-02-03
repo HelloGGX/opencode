@@ -660,56 +660,61 @@ OpenCode 的技术栈选型经过深思熟虑，每个技术都有明确的理�
 
 ```mermaid
 sequenceDiagram
-    participant User as 用户
-    participant UI as 用户界面<br/>(TUI/Web/VSCode)
-    participant Worker as Worker<br/>(RPC 通信)
-    participant Server as 服务器<br/>(Hono HTTP)
-    participant Session as Session<br/>会话管理
-    participant Auth as Auth<br/>认证系统
-    participant Permission as Permission<br/>权限控制
-    participant Provider as Provider<br/>AI 提供商
-    participant Tool as Tool<br/>工具系统
-    participant Bus as EventBus<br/>事件总线
-    participant Storage as Storage<br/>存储系统
+    participant User
+    participant Client
+    participant Server
+    participant Session
+    participant Processor
+    participant Provider
+    participant ToolRegistry
+    participant Permission
+    participant Tool
+    participant Bus
+    participant Storage
+    participant FS
     
-    User->>UI: 输入提示词<br/>"创建 README.md"
-    UI->>Worker: RPC 调用<br/>/session/prompt
-    Worker->>Server: HTTP POST /session/prompt
+    User->>Client: 输入提示词
+    Client->>Server: 通信请求
+    
     Server->>Session: session.prompt()
+    Session->>Processor: 创建处理器
+    Processor->>Provider: LLM.stream()
     
-    Session->>Permission: 加载会话权限配置
-    Permission-->>Session: 权限规则
+    Provider-->>Processor: 流式事件
+    Processor->>Bus: MessageV2.Event.Updated
+    Bus->>Client: 事件推送
     
-    Session->>Provider: 调用 AI 模型<br/>(内部获取 Auth)
-    Provider->>Auth: 获取 API 凭证
-    Auth-->>Provider: API Key/Token
-    Provider-->>Session: 流式响应<br/>"我将创建 README.md"
-    Session->>Bus: publish(MessageV2.Event.Updated)
-    Bus->>UI: Event 事件推送
-    UI-->>User: 实时显示响应
+    alt AI 请求工具调用
+        Provider->>Processor: tool-call
+        Processor->>Permission: 权限检查
+        Permission-->>Processor: 权限结果
+        
+        alt 需要用户确认
+            Permission->>Client: 询问用户
+            Client-->>User: 显示权限请求
+            User->>Client: 批准
+            Client->>Permission: 用户决策
+            Permission-->>Processor: 权限通过
+        end
+        
+        Processor->>ToolRegistry: 工具定义
+        ToolRegistry-->>Processor: 工具列表
+        
+        Processor->>Tool: resolveTools()
+        Tool->>FS: Bun.write
+        FS-->>Tool: 写入成功
+        Tool->>Bus: File.Event.Edited
+        Tool-->>Processor: 工具结果
+        
+        Processor->>Provider: 继续对话
+    end
     
-    Provider->>Session: 工具调用请求<br/>write(path: "README.md")
-    Session->>Permission: 检查 write 权限
-    Permission->>UI: 询问用户
-    UI-->>User: 显示权限请求
-    User->>UI: 批准
-    UI->>Permission: 用户批准
-    Permission-->>Session: 权限通过
-    
-    Session->>Tool: tool.execute()
-    Tool->>Tool: ToolRegistry 执行
-    Tool->>Storage: 写入文件
-    Storage-->>Tool: 写入成功
-    Tool->>Bus: publish(File.Event.Edited)
-    Bus->>UI: Event 事件推送
-    Tool-->>Session: 工具执行结果
-    
-    Session->>Provider: 继续对话
-    Provider-->>Session: "README.md 已创建"
-    Session->>Storage: 保存会话状态
-    Session->>Bus: publish(Event.Updated)
-    Bus->>UI: Event 事件推送
-    UI-->>User: 显示完成状态
+    Provider-->>Processor: done
+    Processor->>Storage: Session.update()
+    Storage-->>Processor: 保存成功
+    Processor->>Bus: Event.Updated
+    Bus->>Client: 会话完成
+    Client-->>User: 显示完成状态
 ```
 
 ### 关键流程说明
@@ -720,35 +725,44 @@ sequenceDiagram
 
 ---
 
-#### 第一阶段：请求入口与 RPC 通信
+#### 第一阶段：请求入口与多客户端通信
 
-当用户在 TUI 界面输入「帮我创建一个 README.md 文件」这样的请求时，这条消息首先被发送到 TUI 的 Worker 进程。TUI 采用双进程架构：主进程负责 UI 渲染和用户交互，Worker 进程负责与服务器的通信。用户的输入被包装为一个 RPC 调用，通过 Worker 的 `fetch` 桥接函数发送到服务器。
+当用户在终端、桌面应用或 VSCode 插件中输入「帮我创建一个 README.md 文件」这样的请求时，不同的客户端有不同的通信机制。TUI 客户端采用双进程架构：主进程负责 UI 渲染和用户交互，Worker 进程负责与服务器的通信。用户的输入被包装为一个 RPC 调用，通过 Worker 的 `fetch` 桥接函数发送到服务器。与此不同，Desktop 客户端（基于 Tauri）和 VSCode 客户端直接使用 HTTP 与服务器通信。
+
+**多客户端通信架构**：
+- **TUI 客户端**：通过 Worker 进程中的 `createWorkerFetch()` 函数发送 RPC 调用，URL 为 `http://opencode.internal`（非真实网络地址）
+- **Desktop 客户端**：使用 Tauri 的 `invoke` API 或标准 HTTP 请求直接与服务器通信
+- **VSCode 客户端**：通过 VSCode 扩展的 HTTP 客户端直接发送请求到服务器
 
 Worker 进程中的 `fetch` 函数并非真正的网络请求，而是一个 RPC 调用。它将请求参数序列化后，通过进程间通信发送给服务器进程。服务器处理完成后，结果再通过相同的渠道返回给 Worker。这种架构设计有几个重要优势：首先是跨平台兼容性，TUI 可以运行在各种终端环境中而不受网络限制；其次是安全性，敏感的认证信息可以在 Worker 内部处理而不暴露给 UI 层；第三是稳定性，即使 UI 层发生崩溃，Worker 和会话状态可以保持完整。
 
-在服务器端，Hono 框架接收到的请求实际上是来自 Worker 的 RPC 调用。Hono 路由层将 `/session/prompt` 路径的请求分发到 SessionRoutes 模块处理。值得注意的是，TUI 的 `/session/prompt` 端点返回的是 JSON 格式的完整响应，而非 SSE 流式数据。真正的流式更新通过独立的事件订阅机制实现。
+在服务器端，Hono 框架根据客户端类型接收不同形式的请求。TUI 的请求实际上是来自 Worker 的 RPC 调用，而 Desktop 和 VSCode 的请求则是标准的 HTTP POST。Hono 路由层将 `/session/prompt` 路径的请求分发到 SessionRoutes 模块处理。值得注意的是，客户端请求的端点返回的是 JSON 格式的完整响应，而非 SSE 流式数据。真正的流式更新通过独立的事件订阅机制实现。
 
-认证在 OpenCode 中主要用于 AI Provider 的 API 访问控制，而非请求级别的身份验证。Auth 模块管理着各种 AI 服务商的认证信息，包括 OAuth 令牌、API Key 等。当 LLM 模块需要调用 AI 服务时，会从 Auth 模块获取相应的认证凭证。每个 Provider（Anthropic、OpenAI、Google 等）都有独立的认证配置，系统支持同时配置多个 Provider 并在它们之间无缝切换。
+认证在 OpenCode 中主要用于 AI Provider 的 API 访问控制，而非请求级别的身份验证。Auth 模块管理着各种 AI 服务商的认证信息，包括 OAuth 令牌、API Key 等。**关键区别是**：认证凭证在 Provider SDK 初始化时获取，而不是每次 AI API 调用时都重新获取。每个 Provider（Anthropic、OpenAI、Google 等）都有独立的认证配置，系统支持同时配置多个 Provider 并在它们之间无缝切换。
 
 ---
 
-#### 第二阶段：会话创建与上下文准备
+#### 第二阶段：会话创建与处理器初始化
 
 认证通过后，请求正式进入会话处理流程。Session 模块是整个系统的核心协调者，它负责维护对话的完整生命周期。对于一个新会话，系统会创建一个唯一的 Session ID，这个 ID 采用 ULID 算法生成，保证全局唯一性和时间有序性。Session ID 成为贯穿整个对话过程的关联键，任何后续的操作（AI 调用、工具执行、权限检查）都会携带这个标识符。
 
 会话对象不仅包含一个唯一的标识符，还维护着对话所需的所有状态信息。MessageV2 类型的消息历史记录了从对话开始到现在所有的用户输入和 AI 响应；系统提示词定义了 AI 的角色定位和行为规范，从 session/system.ts 文件加载；工具清单列出了 AI 可以调用的所有工具及其描述定义；配置参数控制着对话的各种行为选项。这些信息共同构成了 AI 理解对话上下文的基础。
 
-会话处理由 SessionProcessor 模块负责协调。Processor 实现了主处理循环，不断接收 AI 的响应并决定下一步操作。当 Processor 创建时，它首先初始化一个消息对象来存储 AI 的响应内容，然后进入处理循环。在每次循环中，Processor 调用 LLM.stream 方法发起 AI 调用，然后将 AI 的输出逐步追加到消息中。
+**会话处理器（SessionProcessor）是处理 AI 流式响应的核心组件**。会话处理由 SessionProcessor 模块负责协调，而 Session 模块则负责创建和管理 Processor 的生命周期。Processor 实现了主处理循环，不断接收 AI 的响应并决定下一步操作。当 Processor 创建时，它首先初始化一个消息对象来存储 AI 的响应内容，然后进入处理循环。在每次循环中，Processor 调用 LLM.stream 方法发起 AI 调用，然后将 AI 的输出逐步追加到消息中。
+
+**权限配置的动态加载机制**：与预加载不同，OpenCode 采用动态权限检查策略。当 AI 在响应中请求调用某个工具时，Processor 才会触发权限检查流程。权限规则来自两个来源的合并：`Agent.permission`（智能体定义的权限）和 `Session.permission`（会话配置的权限）。通过 `PermissionNext.merge(agent.permission, session.permission ?? [])` 动态合并这两个来源的规则，根据具体工具调用场景进行精确匹配。
 
 会话创建完成后，系统会为这次对话分配状态。SessionStatus 模块跟踪每个会话的当前状态：空闲（Idle）表示等待用户输入，处理中（busy）表示正在响应用户请求。状态变化通过 EventBus 广播给所有订阅者，UI 层据此更新界面显示，告诉用户当前对话是正在进行还是已经完成。
 
 ---
 
-#### 第三阶段：AI 调用与流式响应
+#### 第三阶段：AI 调用与 Provider 初始化
 
 进入处理阶段后，会话模块首先构建发送给 AI 模型的请求消息。这个请求由三部分组成：系统提示词定义了 AI 的行为准则和专业知识边界；历史消息提供了对话的上下文背景，让 AI 能够理解对话的连续性；当前用户输入则是这一次交互的核心内容。消息构建完成后，系统会从配置中读取用户偏好的 AI 模型信息，准备发起实际的 API 调用。
 
-AI 调用的实际执行由 LLM 模块负责。LLM 模块封装了与各种 AI Provider 的交互逻辑，它通过 Provider 模块获取具体的模型实例和调用接口。Provider 模块支持二十余家 AI 服务商，包括 Anthropic、OpenAI、Google、DeepSeek 等，每个服务商都有独立的适配器实现。LLM 模块调用 `streamText` 函数发起流式请求，这个函数来自 ai SDK，提供了统一的流式响应处理接口。
+AI 调用的实际执行由 LLM 模块负责。LLM 模块封装了与各种 AI Provider 的交互逻辑，它通过 Provider 模块获取具体的模型实例和调用接口。Provider 模块支持二十余家 AI 服务商，包括 Anthropic、OpenAI、Google、DeepSeek 等，每个服务商都有独立的适配器实现。
+
+**Provider SDK 初始化与认证获取**：当 LLM 模块首次调用 Provider 时，Provider SDK 会初始化并获取认证凭证。`Provider.getProvider()` 方法返回 Provider 配置信息，其中包含认证信息。**关键实现细节是**：认证凭证（API Key、OAuth Token）是在 Provider SDK 初始化时从 Auth 模块获取并配置到 SDK 中的，而不是在每次 API 调用时都重新获取。这种设计避免了重复的认证开销，提高了 API 调用的效率。LLM 模块随后调用 `streamText` 函数发起流式请求，这个函数来自 ai SDK，提供了统一的流式响应处理接口。
 
 发起 AI 调用后，系统开始处理流式响应。`streamText` 返回一个可迭代对象，包含多种类型的事件：start 事件表示流式响应开始；text-delta 事件包含新生成的文本片段；tool-call 事件表示 AI 请求调用工具；done 事件表示响应完成。Processor 遍历这些事件，根据事件类型执行相应的处理逻辑。
 
@@ -756,21 +770,33 @@ AI 调用的实际执行由 LLM 模块负责。LLM 模块封装了与各种 AI P
 
 ---
 
-#### 第四阶段：工具调用与权限检查
+#### 第四阶段：工具调用与动态权限检查
 
-当 AI 在响应中请求调用某个工具时（比如写入文件、执行命令），系统会进入一个特殊的处理流程。Processor 检测到 tool-call 事件后，首先从工具注册表（ToolRegistry）中查找对应的工具实现。工具注册表维护着所有可用工具的映射，每个工具都有唯一的 ID 和初始化函数。
+当 AI 在响应中请求调用某个工具时（比如写入文件、执行命令），系统会进入一个特殊的处理流程。Processor 检测到 tool-call 事件后，首先触发权限检查流程。**权限检查是动态的、按需进行的**，而不是在会话开始时预先加载所有权限规则。
 
-工具执行前必须通过权限检查。PermissionNext 模块实现了 OpenCode 的权限控制系统，它基于规则匹配来决定是否允许特定操作。每个权限规则包含三个要素：操作类型（permission，如 write、read、execute）、文件路径模式（pattern，支持通配符匹配）、执行动作（action，可以是 allow、deny 或 ask）。权限检查遵循优先级规则：具体路径的规则优先于通用路径的规则，先出现的规则优先于后出现的规则。
+**动态权限检查机制**：Processor 调用 `PermissionNext.ask()` 方法发起权限请求。这个方法接收动态合并的权限规则集（`PermissionNext.merge(agent.permission, session.permission ?? [])`），根据具体的工具调用场景进行匹配检查。权限检查遵循优先级规则：具体路径的规则优先于通用路径的规则，先出现的规则优先于后出现的规则。
 
 如果权限规则配置为 ask 模式，系统需要等待用户确认才能继续执行。Processor 调用 `ctx.ask` 方法发布权限请求事件。UI 层订阅了这个事件后，会显示权限确认对话框，向用户解释 AI 想要执行什么操作以及可能的风险。用户可以选择允许、拒绝或仅允许这一次操作。这个过程是异步的，Processor 会暂停工具调用流程，等待用户决策。
+
+**ToolRegistry 与工具执行包装器**：工具执行前，Processor 需要获取工具定义。`ToolRegistry.tools()` 方法根据模型 ID 和提供商 ID 获取可用的工具列表，每个工具都有描述、参数模式等元数据。**关键实现细节是**：实际执行不是直接调用工具，而是通过 `resolveTools()` 包装器完成的。这个包装器包含了：
+
+1. **Plugin Hooks**：在工具执行前后触发插件事件（`tool.execute.before`、`tool.execute.after`）
+2. **权限上下文**：为每个工具调用注入权限检查能力（`ctx.ask()`）
+3. **执行包装**：为工具调用添加超时控制、错误处理等逻辑
 
 权限检查通过后，工具进入实际执行阶段。每个工具都实现了统一的接口规范，包含初始化函数和执行函数。初始化函数负责加载工具的描述信息和参数模式定义；执行函数接收参数和上下文，执行具体操作并返回结果。工具执行完成后，结果被格式化为标准格式，包含执行状态、输出文本和可选的附件信息。
 
 ---
 
-#### 第五阶段：结果整合与状态持久化
+#### 第五阶段：结果整合与混合存储架构
 
 工具执行完成后，结果被返回给 Processor。Processor 将工具结果格式化为 ToolPart 类型的消息片段，追加到当前助手消息中。工具结果随后被添加到消息历史，使得 AI 在后续响应中可以引用工具的执行结果。这个过程会循环进行：AI 可能基于工具结果继续请求调用其他工具，或者决定结束对话返回最终响应。
+
+**混合存储架构**：OpenCode 采用文件系统直写和元数据存储相结合的混合策略。
+
+1. **文件系统写入**：工具执行（如 write、edit）直接使用 `Bun.write()` 或 `fs.writeFile()` 将内容写入磁盘，**不经过 Storage 组件**。这种设计利用了底层操作系统的高效文件 IO 能力，避免了额外的抽象层开销。写入完成后，工具发布 `File.Event.Edited` 事件通知相关组件。
+
+2. **会话元数据存储**：Session 的元数据（标题、状态、权限配置等）通过 `Storage.update()` 方法保存。Storage 组件是 SQLite 数据库的封装，负责持久化结构化数据。`Session.update()` 内部调用 `Storage.update()`，并在保存后发布 `Event.Updated` 事件通知订阅者会话状态已变化。
 
 当 AI 最终完成所有处理后，Processor 会收到 done 事件。这个事件表明 AI 已经生成了完整的响应，不再有后续的文本输出或工具调用。Processor 将最终消息保存到会话历史，然后将会话状态更新为空闲。
 
@@ -790,13 +816,19 @@ AI 调用的实际执行由 LLM 模块负责。LLM 模块封装了与各种 AI P
 
 ---
 
-#### 第六阶段：事件广播与 UI 更新
+#### 第六阶段：事件广播与多客户端同步
 
 在整个处理过程中，EventBus 扮演着连接各组件的神经系统角色。EventBus 支持两种事件传递模式：内存事件和全局事件。内存事件在单个进程内通过订阅者列表直接传递，适用于组件间的紧耦合通信；全局事件通过 GlobalBus 跨进程广播，适用于 Worker 和主进程间的通信。
 
-TUI 客户端通过 SDK 客户端订阅服务器的事件流。SDK 客户端创建 EventSource 来接收服务器推送的事件。实际的事件流订阅通过 `sdk.event.subscribe()` 方法实现，这个方法返回一个异步迭代器，客户端通过 `for await` 循环接收事件。每个事件都有类型标识符和属性数据，客户端根据事件类型执行相应的 UI 更新逻辑。
+**多客户端事件同步机制**：不同的客户端通过不同的方式订阅服务器事件：
 
-事件队列机制优化了 UI 更新性能。客户端维护一个事件队列，新收到的事件先进入队列而不是立即处理。如果两次事件的时间间隔小于 16 毫秒，客户端会将后续事件批量处理，避免频繁的 UI 重渲染。如果间隔较长，则立即处理以保持响应性。这种批量更新策略显著减少了 UI 渲染次数，提升了整体性能。
+- **TUI 客户端**：通过 SDK 客户端订阅服务器的事件流。SDK 客户端创建 EventSource 来接收服务器推送的事件。实际的事件流订阅通过 `sdk.event.subscribe()` 方法实现，这个方法返回一个异步迭代器，客户端通过 `for await` 循环接收事件。Worker 进程接收事件后，通过进程间通信转发给 UI 主进程。
+
+- **Desktop 客户端**：使用 Tauri 的事件系统订阅服务器推送的事件。由于 Desktop 应用运行在本地，可以通过标准的 HTTP 长连接或 WebSocket 接收实时事件更新。
+
+- **VSCode 客户端**：利用 VSCode 扩展 API 的事件机制订阅服务器事件。VSCode 提供了 `vscode.EventEmitter` 等原语用于实现事件订阅模式。
+
+**事件队列优化**：事件队列机制优化了 UI 更新性能。客户端维护一个事件队列，新收到的事件先进入队列而不是立即处理。如果两次事件的时间间隔小于 16 毫秒，客户端会将后续事件批量处理，避免频繁的 UI 重渲染。如果间隔较长，则立即处理以保持响应性。这种批量更新策略显著减少了 UI 渲染次数，提升了整体性能。
 
 事件系统还支持通配符订阅模式。日志组件可以订阅所有事件来记录完整的操作历史；审计组件可以订阅特定领域的所有事件来生成合规报告；调试组件可以订阅带模式匹配的事件来追踪特定类型的操作。这种灵活性使得系统可以在不修改发布者代码的情况下，添加新的事件消费者。
 
