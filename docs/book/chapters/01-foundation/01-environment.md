@@ -1,6 +1,5 @@
 # 第二章：环境搭建与CLI实操
-
-在第一章中，我们深入探讨了OpenCode的全景架构与设计哲学，理解了其模块化设计、Agent协作机制以及多平台适配策略。从本章开始，我们将从理论走向实践，通过亲手搭建开发环境来深化对这套架构的理解。本章将以OpenCode官方仓库为蓝本，带领读者完成从零到一的环境搭建工作，目标是让每位读者都能在自己的机器上成功运行`opencode --version`命令，并理解这背后的技术实现细节。
+在第一章中，我们深入探讨了OpenCode的全景架构与设计哲学，对opencode的架构设计有了全面的理解。从本章开始，我们将从理论走向实践，通过亲手搭建开发环境来深化对这套架构的理解。本章将以OpenCode官方仓库为蓝本，带领读者完成从零到一的环境搭建工作，目标是让每位读者都能在自己的机器上成功运行`opencode --version`命令，并理解这背后的技术实现细节。
 
 ## 2.1 项目初始化：从空目录开始
 
@@ -66,6 +65,29 @@ mkdir -p packages/app
 
 这三个子目录分别对应CLI核心模块、SDK模块和Web应用模块。在后续的学习中，我们将逐步填充这些目录的内容。在此之前，让我们先完成Bun的配置工作。
 
+### 2.1.3 补充OpenCode核心目录
+
+除了基础的项目结构，我们还需要创建与OpenCode一致的核心目录。这些目录虽然在本教程中不会立即使用，但为后续章节的功能扩展打下基础。
+
+```bash
+mkdir -p .opencode/agent
+mkdir -p .opencode/command
+mkdir -p .opencode/tool
+
+mkdir -p _bmad/_config
+mkdir -p _bmad/core
+mkdir -p _bmad/bmm/agents
+mkdir -p _bmad/bmm/teams
+
+mkdir -p infra
+
+mkdir -p .github/workflows
+
+# mkdir -p nix
+```
+
+这些目录结构的创建遵循OpenCode项目的最佳实践，为后续的Agent配置、多平台支持等功能预留了扩展空间。
+
 ## 2.2 Bun环境配置详解
 
 ### 2.2.1 安装并验证Bun运行环境
@@ -89,9 +111,8 @@ curl -fsSL https://bun.sh/install | bash
 这条命令会下载Bun的安装脚本并自动执行。安装脚本会自动将bun可执行文件添加到系统的PATH环境变量中，通常是`~/.bun/bin/bun`。安装完成后，你需要重新加载shell配置或打开新的终端窗口以使PATH变更生效：
 
 ```bash
-source ~/.zshrc  # 如果你使用zsh
-# 或者
-source ~/.bashrc  # 如果你使用bash
+source ~/.zshrc
+source ~/.bashrc
 ```
 
 现在再次执行`bun --version`，你应该能看到Bun的版本号了。请注意，OpenCode项目指定使用`bun@1.3.5`版本，如果你的Bun版本与此不同，可能会遇到兼容性问题。在这种情况下，可以使用Bun的版本管理器安装指定版本：
@@ -142,14 +163,14 @@ Bun支持多种配置选项，涵盖了安装行为、打包选项、测试设�
 
 ```toml
 [install]
-cache = true                          # 启用依赖缓存
-clean = false                         # 不自动清理缓存
-dry-run = false                       # 不进行试运行
-global = false                        # 不安装到全局目录
-locked = true                         # 使用锁文件
+cache = true
+clean = false
+dry-run = false
+global = false
+locked = true
 
 [pack]
-prepend = "#!/usr/bin/env bun"        # 在打包文件中添加shebang
+prepend = "#!/usr/bin/env bun"
 ```
 
 这些配置选项可以根据项目的具体需求进行调整。在后续的开发过程中，我们可以根据实际情况修改bunfig.toml文件。
@@ -365,6 +386,7 @@ cat > tsconfig.json << 'EOF'
   "exclude": ["node_modules", "dist"]
 }
 EOF
+
 cat tsconfig.json
 ```
 
@@ -497,495 +519,316 @@ chmod +x bin/myopencode
 
 接下来，脚本检测当前操作系统和CPU架构。`platformMap`和`archMap`将系统信息映射到OpenCode的二进制命名规范。例如，在macOS（M1芯片）上运行的系统会被映射为`myopencode-darwin-arm64`。
 
-`findBinary`函数负责在目录树中搜索实际的二进制文件。它采用向上遍历的策略，从当前脚本所在目录开始，不断向父目录搜索，直到找到包含正确二进制文件的node_modules目录。
+`findBinary`函数负责在node_modules目录中查找正确的二进制文件。它从脚本所在目录开始，向上遍历目录树，直到找到匹配的二进制文件为止。这种设计确保了无论CLI包安装在什么位置，脚本都能正确定位二进制文件。
 
-### 2.4.2 创建TypeScript核心实现
+### 2.4.2 实现真正的版本命令
 
-现在，我们创建CLI的核心TypeScript实现。这个文件将处理命令行参数并执行相应的操作：
+为了使`myopencode --version`命令正常工作，我们需要在CLI包中实现真正的版本输出逻辑：
 
 ```bash
-mkdir -p src/cli
+cd packages/cli
+mkdir -p src/commands
+
+cat > src/commands/version.ts << 'EOF'
+import { Command } from "commander"
+
+export function createVersionCommand(): Command {
+  const cmd = new Command("version")
+    .alias("--version")
+    .description("显示MyOpenCode版本信息")
+    .action(() => {
+      const pkg = JSON.parse(
+        await Bun.file(import.meta.dir + "/../../package.json").text()
+      )
+      console.log(`MyOpenCode version ${pkg.version}`)
+      console.log(`Environment: ${process.platform}/${process.arch}`)
+      console.log(`Node.js: ${process.version}`)
+    })
+  
+  return cmd
+}
+EOF
+
 cat > src/index.ts << 'EOF'
-#!/usr/bin/env bun
+import { Command } from "commander"
+import { createVersionCommand } from "./commands/version"
 
-import { parseArgs } from "util"
+const program = new Command()
 
-interface CliOptions {
-  version: boolean
-  help: boolean
-}
+program.addCommand(createVersionCommand())
 
-function printVersion(): void {
-  console.log("myopencode version 0.1.0")
-}
-
-function printHelp(): void {
-  console.log(`
-MyOpenCode - AI-powered Development Tool
-
-Usage: myopencode [options] [command]
-
-Options:
-  -V, --version    output the version number
-  -h, --help       display help for command
-
-Commands:
-  start            Start the development server
-  build            Build the project for production
-  test             Run tests
-  help [command]   display help for a specific command
-
-For more information, visit https://github.com/yourusername/myopencode
-`)
-}
-
-function main(): void {
-  const args = parseArgs({
-    args: Bun.argv,
-    strict: true,
-    allowPositionals: true,
-  })
-
-  const options: CliOptions = {
-    version: false,
-    help: false,
-  }
-
-  const positionals: string[] = []
-
-  for (const arg of args.positionals) {
-    if (arg === "--version" || arg === "-V") {
-      options.version = true
-    } else if (arg === "--help" || arg === "-h") {
-      options.help = true
-    } else {
-      positionals.push(arg)
-    }
-  }
-
-  if (options.version) {
-    printVersion()
-    process.exit(0)
-  }
-
-  if (options.help) {
-    printHelp()
-    process.exit(0)
-  }
-
-  if (positionals.length === 0) {
-    printHelp()
-    process.exit(0)
-  }
-
-  const command = positionals[0]
-  const commandArgs = positionals.slice(1)
-
-  switch (command) {
-    case "start":
-      console.log("Starting development server...")
-      break
-    case "build":
-      console.log("Building project...")
-      break
-    case "test":
-      console.log("Running tests...")
-      break
-    default:
-      console.error(`Unknown command: ${command}`)
-      printHelp()
-      process.exit(1)
-  }
-}
-
-main()
+await program.parseAsync()
 EOF
-
-cat src/index.ts
 ```
 
-这个TypeScript实现展示了CLI的基本框架：
-
-`parseArgs`函数来自Bun的util模块，用于解析命令行参数。Bun提供了原生的参数解析支持，这比使用第三方库如yargs更加轻量和快速。
-
-`printVersion`和`printHelp`函数分别处理版本查询和帮助信息显示。在`myopencode --version`命令被调用时，`printVersion`函数会输出当前版本号。
-
-`main`函数是CLI的入口点。它首先解析命令行参数，然后根据参数执行相应的操作。参数解析遵循常见的CLI约定：`-V`或`--version`输出版本，`-h`或`--help`显示帮助信息。
-
-switch语句处理各个子命令。目前的实现只打印消息，真正的实现会在后续章节中逐步添加。
-
-### 2.4.3 创建平台特定的构建脚本
-
-为了让我们的CLI能够在不同平台上运行，我们需要创建一个构建脚本，将TypeScript代码编译为可执行文件：
+为了使用Commander库，我们需要更新CLI包的依赖：
 
 ```bash
-mkdir -p script
-cat > script/build.ts << 'EOF'
-import { mkdir, writeFile, rm, cp, exec } from "node:fs/promises"
-import { existsSync } from "node:fs"
-import { join, dirname } from "node:path"
-import { fileURLToPath } from "node:url"
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const rootDir = join(__dirname, "..")
-const srcDir = join(rootDir, "src")
-const distDir = join(rootDir, "dist")
-
-const platforms = [
-  { os: "darwin", arch: "x64", exe: "myopencode-darwin-x64" },
-  { os: "darwin", arch: "arm64", exe: "myopencode-darwin-arm64" },
-  { os: "linux", arch: "x64", exe: "myopencode-linux-x64" },
-  { os: "linux", arch: "arm64", exe: "myopencode-linux-arm64" },
-  { os: "windows", arch: "x64", exe: "myopencode-windows-x64.exe" },
-]
-
-async function build() {
-  console.log("Building MyOpenCode CLI...")
-
-  if (existsSync(distDir)) {
-    await rm(distDir, { recursive: true })
-  }
-  await mkdir(distDir, { recursive: true })
-
-  for (const platform of platforms) {
-    const platformDir = join(distDir, platform.exe)
-    await mkdir(platformDir, { recursive: true })
-
-    const executableContent = `#!/bin/bash
-exec bun "${join(dirname(platformDir), "..", "..", "src", "index.ts")}" "$@"
-`
-
-    await writeFile(join(platformDir, "myopencode"), executableContent)
-    await chmod(join(platformDir, "myopencode"), "755")
-
-    console.log(`Built for ${platform.os}-${platform.arch}`)
-  }
-
-  console.log("Build complete!")
-}
-
-async function chmod(path: string, mode: string) {
-  const { chmodSync } = await import("node:fs")
-  chmodSync(path, mode)
-}
-
-build().catch(console.error)
-EOF
-
-cat script/build.ts
+cd packages/cli
+bun add commander
 ```
 
-这个构建脚本展示了如何为不同平台生成可执行文件。实际的构建过程会更加复杂，需要编译TypeScript代码、捆绑依赖等，但这个示例展示了基本的架构。
-
-## 2.5 依赖安装与功能验证
-
-### 2.5.1 安装项目依赖
-
-现在，我们已经完成了CLI包的基本配置，接下来需要安装所有依赖。回到项目根目录并执行安装命令：
+现在可以测试版本命令：
 
 ```bash
-cd ../..
+cd ../../..
+bun install
+myopencode --version
+```
+
+如果一切正常，你应该看到类似这样的输出：
+
+```
+MyOpenCode version 0.1.0
+Environment: darwin/arm64
+Node.js: v21.0.0
+```
+
+## 2.5 安装依赖并验证环境
+
+### 2.5.1 执行依赖安装
+
+现在我们已经完成了所有的配置工作，是时候安装项目的依赖包了。在Monorepo中，依赖安装是一个重要的步骤，它会解析所有工作区的依赖关系，并创建正确的符号链接。
+
+首先，返回项目根目录：
+
+```bash
+cd ~/workspace/myopencode
+```
+
+然后，执行Bun的依赖安装命令：
+
+```bash
 bun install
 ```
 
-Bun会读取根目录的package.json文件，处理workspaces配置，然后依次安装所有声明的依赖。这个过程会生成bun.lockb文件，记录所有依赖的确切版本。
+这个命令会执行以下操作：
 
-安装过程中，Bun会输出进度信息，让我们可以监控安装进度。如果遇到网络问题或依赖冲突，Bun会提供详细的错误信息。
+首先，解析整个Monorepo的依赖关系图，包括根目录和所有子包的依赖。
 
-依赖安装完成后，我们可以通过以下命令验证安装结果：
+其次，从npm注册表下载所需的包到根目录的node_modules中。
+
+然后，根据package.json中的catalog配置，为各个子包安装正确版本的依赖。
+
+最后，创建workspace:协议的符号链接，使各子包能够相互引用。
+
+安装过程可能会持续几分钟，具体时间取决于网络速度和依赖数量。如果遇到网络问题，可以尝试使用镜像源或代理。
+
+安装完成后，我们可以验证依赖是否正确安装：
 
 ```bash
-ls -la node_modules
+ls node_modules/ | head -20
 ```
 
-你应该能看到node_modules目录已经创建，其中包含了所有依赖包。由于我们使用的是Bun的catalog机制，实际安装的依赖版本会与根目录package.json中catalog定义的版本一致。
+这个命令会列出node_modules目录中的前20个包。你应该能看到根目录的依赖（如bun、typescript等）以及各子包的依赖。
 
 ### 2.5.2 链接CLI命令
 
-要让`myopencode`命令在系统中全局可用，我们需要将CLI包链接到全局。这可以通过Bun的link命令完成：
+为了能够在终端中直接使用`myopencode`命令，我们需要将CLI包链接到全局环境中。Bun提供了`bun link`命令来实现这个功能：
 
 ```bash
 cd packages/cli
 bun link
 ```
 
-这个命令会创建一个符号链接，将`myopencode`命令指向当前包的bin/myopencode脚本。链接创建完成后，我们可以在任何位置执行`myopencode --version`。
+执行这个命令后，Bun会在全局bin目录（通常是~/.bun/bin）中创建一个指向当前CLI包的符号链接。现在，你可以在任何位置执行`myopencode`命令了。
 
-如果bun link失败，可以尝试使用npm link：
-
-```bash
-cd packages/cli
-npm link
-```
-
-### 2.5.3 验证版本命令
-
-现在，让我们验证CLI是否正常工作。首先检查版本：
+让我们验证CLI命令是否正常工作：
 
 ```bash
-myopencode --version
+cd ../..
+myopencode --help
 ```
 
-如果一切配置正确，你应该能看到输出：`myopencode version 0.1.0`。
+如果一切正常，你应该能看到CLI的帮助信息。这表明我们的CLI入口脚本和依赖链接都配置正确。
 
-接下来，验证帮助命令：
+## 2.6 版本控制与提交
+
+### 2.6.1 检查并提交项目状态
+
+我们已经完成了环境搭建的所有步骤，现在应该将项目状态提交到Git版本控制中。首先，让我们检查当前的Git状态：
+
+```bash
+git status
+```
+
+这个命令会显示所有已修改、新增或删除的文件。你应该能看到我们创建的所有配置文件和目录。
+
+为了更好地理解项目的变更，让我们查看具体的差异：
+
+```bash
+git diff --stat
+```
+
+这个命令会显示每个文件的变更统计信息。
+
+现在，让我们提交这些变更：
+
+```bash
+git add .
+git commit -m "完成环境搭建：Monorepo配置、Bun环境、CLI基础结构"
+git log --oneline -5
+```
+
+提交完成后，Git会显示提交历史的最后5条记录。我们可以看到刚刚完成的提交已经记录在案。
+
+## 2.7 功能验证与总结
+
+### 2.7.1 开发环境验证清单
+
+让我们验证本章实现的所有功能，确保环境搭建工作已经完成：
+
+**Bun环境验证：**
+
+```bash
+bun --version
+bun --help
+```
+
+确保Bun版本为1.3.5，并且能看到所有可用的子命令。
+
+**项目结构验证：**
+
+```bash
+tree -L 2 -I node_modules
+```
+
+这个命令会以树形结构显示项目目录，排除node_modules目录。你应该能看到根目录的结构以及packages下各子包的目录。
+
+**CLI命令验证：**
 
 ```bash
 myopencode --help
 ```
 
-你应该能看到帮助信息，显示可用的命令和选项。
+确保CLI命令能够正确执行并显示帮助信息。
 
-最后，尝试一个简单的命令：
-
-```bash
-myopencode start
-```
-
-你应该能看到`Starting development server...`的输出。
-
-如果这些命令都能正常工作，说明我们的CLI框架已经搭建成功！
-
-## 2.6 进阶配置与优化
-
-### 2.6.1 添加Git Hooks
-
-OpenCode项目使用了Husky来管理Git hooks，这允许我们在提交代码前执行各种检查。让我们也为自己的项目添加Git hooks支持。
-
-首先，在项目根目录初始化Husky：
+**TypeScript配置验证：**
 
 ```bash
-cd ../..
-npm install -D husky
-npx husky init
-```
-
-这会在项目根目录创建.husky目录和prepare脚本。
-
-接下来，创建一个pre-commit hook来运行代码检查：
-
-```bash
-cat > .husky/pre-commit << 'EOF'
-#!/bin/bash
-echo "Running pre-commit checks..."
-echo "Type checking..."
 bun run typecheck
-EOF
-
-chmod +x .husky/pre-commit
 ```
 
-现在，每次执行git commit时，Husky都会自动运行pre-commit脚本，执行类型检查。
+这个命令会运行根目录package.json中定义的typecheck脚本，验证TypeScript配置是否正确。
 
-### 2.6.2 配置代码格式化
-
-良好的代码格式是团队协作的基础。OpenCode项目使用了Prettier来格式化代码。让我们配置Prettier：
+**构建脚本验证：**
 
 ```bash
-cat > .prettierrc << 'EOF'
-{
-  "semi": false,
-  "printWidth": 120,
-  "tabWidth": 2,
-  "useTabs": false,
-  "singleQuote": true,
-  "trailingComma": "all",
-  "bracketSpacing": true,
-  "arrowParens": "always"
-}
-EOF
+bun run build
 ```
 
-创建.prettierignore文件来排除不需要格式化的文件：
+这个命令会运行构建脚本，验证构建配置是否正确。
 
-```bash
-cat > .prettierignore << 'EOF'
-node_modules/
-dist/
-*.log
-.DS_Store
-EOF
-```
+### 2.7.2 本章知识点总结
 
-现在，我们可以使用Prettier格式化代码：
+通过本章的学习，我们掌握了以下核心知识点：
 
-```bash
-bun run format
-```
+**Monorepo架构原理**：我们理解了Monorepo的核心概念，包括工作区（workspace）的定义、依赖解析机制以及子包之间的相互引用方式。通过使用Bun的catalog功能，我们实现了集中化的依赖版本管理。
 
-在package.json中添加format脚本：
+**Bun包管理器特性**：我们深入了解了Bun的各种特性，包括其卓越的安装性能、bunfig.toml配置文件的用法以及与其他包管理器的差异。Bun的catalog机制为大型项目提供了强大的版本控制能力。
 
-```bash
-cd packages/cli
-cat > package.json << 'EOF'
-{
-  "$schema": "https://json.schemastore.org/package.json",
-  "name": "@myopencode/cli",
-  "version": "0.1.0",
-  "type": "module",
-  "license": "MIT",
-  "bin": {
-    "myopencode": "./bin/myopencode"
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "build": "bun run script/build.ts",
-    "dev": "bun run --conditions=browser ./src/index.ts",
-    "clean": "echo '清理构建产物...'",
-    "format": "prettier --write src/",
-    "lint": "echo '代码检查...'",
-    "random": "echo 'Random script updated at $(date)' && echo 'Change queued successfully' && echo 'Another change made' && echo 'Yet another change' && echo 'One more change' && echo 'Final change' && echo 'Another final change' && echo 'Yet another final change'"
-  },
-  "devDependencies": {
-    "@tsconfig/bun": "catalog:",
-    "@types/bun": "catalog:",
-    "@types/node": "catalog:",
-    "prettier": "catalog:",
-    "typescript": "catalog:"
-  },
-  "dependencies": {
-    "typescript": "catalog:"
-  }
-}
-EOF
-```
+**TypeScript工程化配置**：我们学习了如何配置生产级别的TypeScript环境，包括继承社区最佳实践、配置严格的类型检查以及设置合理的包含和排除规则。
 
-### 2.6.3 创建开发工作流脚本
+**CLI开发基础**：我们实现了与OpenCode一致的CLI入口脚本，理解了平台检测、路径解析和进程启动的技术细节。
 
-为了提高开发效率，我们可以在根目录的package.json中添加工作流脚本：
-
-```bash
-cd ../..
-cat > package.json << 'EOF'
-{
-  "$schema": "https://json.schemastore.org/package.json",
-  "name": "myopencode",
-  "description": "AI-powered development tool - Monorepo tutorial",
-  "private": true,
-  "type": "module",
-  "packageManager": "bun@1.3.5",
-  "scripts": {
-    "dev": "bun run --cwd packages/cli --conditions=browser src/index.ts",
-    "typecheck": "bun turbo typecheck",
-    "build": "bun turbo build",
-    "test": "echo '运行测试...'",
-    "prepare": "husky",
-    "format": "prettier --write 'packages/**/*.{ts,json,toml}'",
-    "lint": "echo '运行代码检查...'",
-    "clean": "bun turbo clean",
-    "random": "echo 'Random script updated at $(date)' && echo 'Change queued successfully' && echo 'Another change made' && echo 'Yet another change' && echo 'One more change' && echo 'Final change' && echo 'Another final change' && echo 'Yet another final change'"
-  },
-  "workspaces": {
-    "packages": [
-      "packages/*"
-    ],
-    "catalog": {
-      "@types/bun": "1.3.5",
-      "@types/node": "22.13.9",
-      "prettier": "3.6.2",
-      "typescript": "5.8.2",
-      "zod": "3.22.0"
-    }
-  },
-  "devDependencies": {
-    "@tsconfig/bun": "catalog:",
-    "husky": "9.1.7",
-    "prettier": "catalog:",
-    "turbo": "2.5.6"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/yourusername/myopencode"
-  },
-  "license": "MIT",
-  "prettier": {
-    "semi": false,
-    "printWidth": 120
-  }
-}
-EOF
-```
-
-这些脚本提供了一个统一的开发界面。`bun run dev`会启动CLI的开发模式，`bun run typecheck`会对所有包进行类型检查，`bun run format`会格式化所有代码。
-
-## 2.7 本章小结与项目状态
-
-### 2.7.1 完成的项目结构
-
-经过本章的学习，我们已经成功搭建了一个与OpenCode架构一致的Monorepo项目。项目结构如下：
-
-```
-myopencode/
-├── .git/                    # Git版本控制
-├── .gitignore              # Git忽略规则
-├── .husky/                  # Git hooks
-│   └── pre-commit
-├── bun.lockb               # Bun锁文件
-├── bunfig.toml             # Bun配置
-├── package.json            # 根包配置
-├── tsconfig.json           # TypeScript配置
-├── .prettierrc             # Prettier配置
-├── .prettierignore         # Prettier忽略规则
-└── packages/
-    ├── cli/
-    │   ├── bin/
-    │   │   └── myopencode  # CLI入口脚本
-    │   ├── script/
-    │   │   └── build.ts    # 构建脚本
-    │   ├── src/
-    │   │   └── index.ts    # CLI核心实现
-    │   ├── package.json    # CLI包配置
-    │   └── tsconfig.json   # CLI TypeScript配置
-    ├── sdk/
-    │   ├── src/
-    │   │   └── index.ts
-    │   └── package.json
-    └── app/
-        ├── src/
-        │   └── index.ts
-        └── package.json
-```
-
-### 2.7.2 功能验证清单
-
-让我们验证本章实现的所有功能：
-
-**Bun环境验证：**
-
-```bash
-bun --version  # 应输出 1.3.5
-```
-
-**CLI命令验证：**
-
-```bash
-myopencode --version  # 应输出 myopencode version 0.1.0
-myopencode --help     # 应显示帮助信息
-myopencode start      # 应显示 Starting development server...
-```
-
-**项目结构验证：**
-
-```bash
-ls -la packages/cli/
-ls -la packages/cli/bin/
-ls -la packages/cli/src/
-```
-
-**依赖安装验证：**
-
-```bash
-ls node_modules/ | head -20
-```
-
-如果所有这些验证都通过了，恭喜你！你已经成功完成了本章的学习，掌握了Monorepo项目的搭建方法。
+**版本控制最佳实践**：我们建立了规范的Git提交流程，包括合理的.gitignore配置和语义化的提交信息。
 
 ### 2.7.3 后续章节预告
 
 完成环境搭建后，读者已经具备了继续探索OpenCode各项功能的基础。在下一章中，我们将深入CLI的具体实现，学习如何使用参数解析库、创建命令架构、设计交互式界面等。通过这些学习，你将能够为MyOpenCode添加更多实用的命令和功能，真正打造一个属于自己的AI辅助开发工具。
 
-### 2.7.4 常见问题解答
+## 2.8 GitHub Actions CI/CD配置
+
+为了使项目具备持续集成和持续部署的能力，我们需要配置GitHub Actions工作流。虽然这些配置在本教程中不会立即使用，但它们对于后续章节的自动化测试和部署至关重要。
+
+首先，创建GitHub工作流配置目录：
+
+```bash
+mkdir -p .github/workflows
+```
+
+然后，创建基础的CI工作流：
+
+```bash
+cat > .github/workflows/ci.yml << 'EOF'
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: 1.3.5
+    
+    - name: Install dependencies
+      run: bun install
+    
+    - name: Typecheck
+      run: bun run typecheck
+    
+    - name: Build
+      run: bun run build
+    
+    - name: Run tests
+      run: bun run test
+EOF
+```
+
+创建类型检查工作流：
+
+```bash
+cat > .github/workflows/typecheck.yml << 'EOF'
+name: TypeCheck
+
+on:
+  push:
+    paths:
+      - '**.ts'
+      - '**.tsx'
+      - 'tsconfig.json'
+      - 'bunfig.toml'
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: 1.3.5
+    
+    - run: bun install
+    
+    - name: Run typecheck
+      run: bun run typecheck
+EOF
+```
+
+提交这些配置到版本控制：
+
+```bash
+git add .
+git commit -m "添加GitHub Actions CI/CD配置"
+git push origin main
+```
+
+配置完成后，每次推送代码到main分支或创建Pull Request时，GitHub会自动运行类型检查、构建和测试流程。
+
+## 2.9 常见问题解答
 
 **问：Bun安装失败怎么办？**
 
@@ -993,18 +836,19 @@ ls node_modules/ | head -20
 
 **问：myopencode命令找不到怎么办？**
 
-首先确认已经执行了`bun link`或`npm link`命令。然后检查PATH环境变量是否包含Bun的全局bin目录（通常是~/.bun/bin）。可以使用`which myopencode`或`where myopencode`命令来定位命令位置。
+首先确认已经执行了`bun link`命令。然后检查PATH环境变量是否包含Bun的全局bin目录（通常是~/.bun/bin）。可以使用`which myopencode`或`where myopencode`命令来定位命令位置。
 
 **问：类型检查报错怎么办？**
 
-首先确保已经运行了`bun install`安装所有依赖。然后检查tsconfig.json配置是否正确。如果是从头开始的项目，可能需要调整include和exclude模式。
+首先确保已经在项目根目录执行了`bun install`，所有依赖都已正确安装。检查TypeScript配置文件tsconfig.json是否存在且格式正确。确保使用了正确版本的TypeScript（通过catalog配置）。
 
-**问：如何添加新的子包？**
+**问：Monorepo依赖安装失败怎么办？**
 
-在packages目录下创建新目录，添加package.json配置文件，然后在根目录的package.json workspaces.packages中添加对应的模式匹配即可。
+检查网络连接是否正常。尝试删除node_modules目录和bun.lockb锁文件后重新安装。确保各子包的package.json配置正确，特别是workspace:协议的引用格式。
 
-**问：如何升级依赖版本？**
+**问：如何清理构建产物？**
 
-修改根目录package.json中catalog定义的版本号，然后运行`bun install`更新所有子包的依赖。
+可以使用各子包中的clean脚本，或者手动删除dist目录和构建产物。对于node_modules目录，通常不需要手动清理，Bun会自动处理。
 
 通过本章的学习，我们不仅完成了开发环境的搭建，更重要的是理解了OpenCode背后的设计哲学和架构决策。这些知识将在后续的实践中发挥重要作用，帮助你更好地理解和使用OpenCode提供的各项功能。
+
