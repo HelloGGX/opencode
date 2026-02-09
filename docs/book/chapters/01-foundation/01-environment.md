@@ -67,12 +67,7 @@ source ~/.zshrc
 source ~/.bashrc
 ```
 
-现在再次执行`bun --version`，你应该能看到Bun的版本号了。请注意，参考项目指定使用`bun@1.3.5`版本，如果你的Bun版本与此不同，可能会遇到兼容性问题。在这种情况下，可以使用Bun的版本管理器安装指定版本：
-
-```bash
-bun install -g bun@1.3.5
-```
-或者使用bun upgrade升级到最新版本, 笔者在写这篇文档时, Bun的最新版本是`1.3.9`
+现在再次执行`bun --version`，你应该能看到Bun的版本号了。请注意，参考项目指定使用`bun@1.3.9`版本，如果你的Bun版本与此不同，可能会遇到兼容性问题。在这种情况下，你可以使用bun upgrade升级到最新版本, 笔者在写这篇文档时, Bun的最新版本是`1.3.9`
 
 ```bash
 bun upgrade
@@ -227,7 +222,7 @@ cat > package.json << 'EOF'
   "description": "AI-powered development tool - Monorepo tutorial",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.5",
+  "packageManager": "bun@1.3.9",
   "scripts": {
     "dev": "echo '开发模式启动...'",
     "typecheck": "echo '类型检查...'",
@@ -253,6 +248,9 @@ cat > package.json << 'EOF'
   "prettier": {
     "semi": false,
     "printWidth": 120
+  },
+  "peerDependencies": {
+    "typescript": "^5"
   }
 }
 EOF
@@ -267,11 +265,11 @@ cat package.json
 - `"description"`字段描述项目的用途。这是一个重要的字段，因为它会出现在npm包的README中，帮助其他开发者了解项目的功能。
 - `"private": true`设置非常重要。对于内部项目或不想发布到npm的包，必须设置这个选项为true。如果忘记设置这个选项，npm publish会拒绝发布私有包。
 - `"type": "module"`声明这个包使用ES Modules语法。这是Bun原生支持的模式，与现代JavaScript生态接轨。如果不使用这个选项，Bun会默认使用CommonJS语法。
-- `"packageManager"`字段指定了项目使用的包管理器及其版本。`"bun@1.3.5"`表示项目要求使用Bun 1.3.5版本。这个字段不仅是对人类的提示，Bun和npm也会读取这个字段以确保使用正确的包管理器版本。
+- `"packageManager"`字段指定了项目使用的包管理器及其版本。`"bun@1.3.9"`表示这个项目必须使用 Bun 1.3.9 版本 。它确保了所有开发者、CI/CD系统和部署环境都使用相同的Bun版本，避免了版本冲突和不一致的问题。
 - `"workspaces"`是Monorepo配置的核心。它包含两部分：`packages` 定义了子包的位置模式，`catalog`定义了共享依赖的版本。
   - `workspaces.packages`使用glob模式匹配子包位置。`"packages/*"`表示packages目录下的所有直接子目录都是独立的工作区。这意味着packages/opencode、packages/sdk、packages/app都会被识别为独立的包，可以相互引用。
   - `workspaces.catalog`是Bun提供的一个强大特性，称为"目录版本控制"。开发者只需在根目录的 `package.json` 文件中定义一次依赖版本。子包会通过 `catalog:` 协议来引用这些版本。开发者在一处修改版本号，该修改会在全局生效。这种机制能确保所有包都使用相同版本的依赖，避免了版本冲突和不一致的问题。
-- `"devDependencies"`字段定义了项目开发时需要的依赖。这些依赖在生产环境中不会被安装，也不会被打包到最终的输出中。在这个配置中，我们暂时只需要`@tsconfig/bun`、`husky`和`prettier`这三个开发工具。
+- `"devDependencies"`字段定义了项目开发时需要的依赖。这些依赖在生产环境中不会被安装，也不会被打包到最终的输出中。在这个配置中，我们暂时只需要`husky`和`prettier`这三个开发工具。
 - `"dependencies"`字段定义了项目运行时需要的依赖。。
 - `"repository"`字段定义了项目的存储库信息，用于发布和下载。在这个配置中，我们使用了GitHub存储库`https://github.com/yourusername/opencode`。
 - `"license"`字段定义了项目的许可证。这个字段是可选的，但建议每个项目都包含一个有效的许可证。在这个配置中，我们使用了MIT许可证。
@@ -279,6 +277,14 @@ cat package.json
 - `"peerDependencies"`字段定义了项目运行时需要的依赖，但这些依赖不是直接被项目使用，而是被其他包引用。大白话：它不是“我需要什么”，而是“我希望你已经有什么”。从更工程化的视角来看，peerDependencies 本质上是在做一件事：把版本控制权上移一层。它让库的作者放弃对某些关键依赖的控制权，换取整个生态的一致性与可组合性。
 
 前文提到，我们的项目是一个基于 Typescript 的 Monorepo 项目，我们将子包设计为独立的库，每个子包都可被外部项目直接引用。通过 Bun 工作区（workspaces）机制，将 TypeScript、Bun 类型库等核心工具集中在根层管理，避免多子包间的版本不一致和重复安装问题。借助 Bun 的 catalogs 功能，可实现依赖版本的统一控制和更简洁的依赖树结构，从而提升整个工作区的开发体验与可维护性。因此，我们建议将 @types/bun 、 typescript 等类型相关的核心依赖纳入 Catalog 管理。
+
+同时为了进一步确保依赖版本的一致性，Bun 提供了 `overrides` 配置。这个配置可以强制所有子包使用根目录定义的特定依赖版本，即使子包中声明了不同的版本。
+
+```json
+"overrides": {
+  "@types/bun": "catalog:"
+}
+```
 
 
 ### 2.3.2 创建子包opencode的目录结构
@@ -327,7 +333,12 @@ EOF
 ### 2.3.3 配置 Turbo 构建系统
 
 在Monorepo项目中，随着子包数量的逐步增多，构建任务的管理往往会变得异常繁杂，因为不同的包可能配备各自独立的构建脚本，而且包与包之间常常存在复杂的依赖链条，例如A包的构建必须在B包之后才能启动，同时每次代码修改后如果盲目重新构建所有包，就会导致严重的资源和时间浪费。Turbo作为一款专为这类场景设计的构建编排工具，正好能有效缓解这些痛点，它的核心优势体现在几个关键方面：通过增量构建机制，只针对发生变化的包及其下游依赖进行处理，从而大幅压缩整体构建时长；借助智能缓存功能，自动存储并复用未改动包的构建产物，避免无谓的重复计算；此外，它还能精细管理任务间的依赖关系，确保所有操作按逻辑顺序顺畅执行；最后，利用并行执行策略，对那些相互独立的子任务自动分配多核CPU资源，进一步提升效率。
-要初始化Turbo配置，首先切换到项目根目录如~/workspace/opencode，然后通过命令行创建turbo.json文件，内容包括一个标准的JSON schema引用，以及tasks字段来定义核心构建任务
+要初始化Turbo配置，首先我们在根目录下安装turbo包：
+
+```bash
+bun install turbo
+```
+然后创建turbo.json文件，内容包括一个标准的JSON schema引用，以及tasks字段来定义核心构建任务，运行下面的命令创建turbo.json文件：
 
 ```bash
 cd ~/workspace/opencode
@@ -417,7 +428,22 @@ cat turbo.json
 bun install @tsconfig/bun
 ```
 
-同时考虑到各个子包都需要依赖@tsconfig/bun，我们需要确保各个子包的"@tsconfig/bun"版本和根目录的版本保持一致，因此在根目录的package.json中添加`"catalog": { "@tsconfig/bun": "1.0.9" }`。并确保在根目录和子包的package.json中添加`"devDependencies": {"@tsconfig/bun": "catalog:"}`
+同时考虑到各个子包都需要依赖@tsconfig/bun，我们需要确保各个子包的"@tsconfig/bun"版本和根目录的版本保持一致，因此在根目录的package.json中添加`"catalog": { "@tsconfig/bun": "1.0.9" }`。并确保在根目录和未来新增的子包的package.json中添加`"devDependencies": {"@tsconfig/bun": "catalog:"}`
+
+```json
+"workspaces": {
+    "packages": ["packages/*"],
+    "catalog": {
+      "@types/bun": "1.3.5",
+      "typescript": "5.8.2",
+      "@tsconfig/bun": "1.0.9"
+    }
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "catalog:",
+    "@types/bun": "catalog:",
+  }
+```
 
 接下来根目录下的tsconfig.json配置内容可以简化为：
 ```json
@@ -482,16 +508,16 @@ bun add -d prettier
 "prettier": {
     "semi": false,
     "printWidth": 120
-  },
+  }
 ```
 
-同时，创建`.prettierignore`文件来指定不需要格式化的文件, 在实际的opencode项目中， 仅仅忽略了以下文件：
+同时，创建`.prettierignore`文件来指定不需要格式化的文件, 在这里我们仅忽略了以下文件：
 
 ```bash
-sst-env.d.ts
-desktop/src/bindings.ts
+cat > .prettierignore << 'EOF'
+dist/**
+EOF
 ```
-sst-env.d.ts 是自动生成的 TypeScript 声明文件，不需要格式化。而desktop/src/bindings.ts 是一个由 Tauri Specta 自动生成的文件，它提供了前端（TypeScript/JavaScript）与后端（Rust）之间的类型安全通信接，也不需要格式化。
 
 在package.json中添加格式化脚本：
 
@@ -523,7 +549,7 @@ bun run husky init
 ```
 
 这会在项目根目录自动创建`.husky`文件夹，该文件夹中包含了一些默认的 Git 钩子脚本，如 pre-commit、pre-push 等。
-但并不是每个开发者都会知道需要手动执行 `bun run husky install` 命令来初始化Husky。因此，我们可以在项目根目录的 package.json 的scripts手动添加命令 `"prepare": "husky"`，它会在依赖安装完成后自动初始化 Husky 并确保 Git Hooks 生效。
+但并不是每个开发者都会知道需要手动执行 `bun run husky init` 命令来初始化Husky。因此，我们可以在项目根目录的 package.json 的scripts手动添加命令 `"prepare": "husky"`，它会在依赖安装完成后自动初始化 Husky 并确保 Git Hooks 生效。
 
 接着我们创建pre-push钩子，确保在推送代码前进行类型检查：
 
@@ -640,7 +666,7 @@ runs:
 ```
 可以看到，我们将 using 设置为 "composite"，这告诉 GitHub Runner：“嘿，不要去找 index.js，请直接执行我定义的 steps。”
 在构建过程中，依赖安装往往是最耗时的环节。为了提升性能，我们必须引入缓存机制。但是，直接使用普通的 Cache Action 有时会遇到命中率低或配置繁琐的问题。
-在这里，我们选择了一种更为激进但也更高效的方案：将缓存挂载为磁盘。我们引入了 useblacksmith/stickydisk，它的作用类似于将一块持久化的硬盘挂载到 Runner 上：
+在这里，我们使用了 GitHub Actions 提供的标准缓存机制。通过引入 actions/cache@v4，可以将依赖缓存到 GitHub 的缓存服务中，在后续构建时自动恢复：
 
 ```bash
 name: "Setup Bun"
@@ -649,7 +675,7 @@ runs:
   using: "composite" # 关键：声明这是一个组合式 Action
   steps:
     - name: Mount Bun Cache
-      uses: useblacksmith/stickydisk@v1
+      uses: actions/cache@v4
       with:
         key: ${{ github.repository }}-bun-cache
         path: ~/.bun
@@ -666,7 +692,7 @@ runs:
   using: "composite" # 关键：声明这是一个组合式 Action
   steps:
     - name: Mount Bun Cache
-      uses: useblacksmith/stickydisk@v1
+      uses: actions/cache@v4
       with:
         key: ${{ github.repository }}-bun-cache
         path: ~/.bun
@@ -687,7 +713,7 @@ runs:
   using: "composite"
   steps:
     - name: Mount Bun Cache
-      uses: useblacksmith/stickydisk@v1
+      uses: actions/cache@v4
       with:
         key: ${{ github.repository }}-bun-cache
         path: ~/.bun
@@ -711,13 +737,6 @@ EOF
 如果分别为 Linux 和 Windows 编写独立的 Workflow，不仅会引入大量重复配置，还会在后续维护中不断放大改动成本，这显然违背了 DRY 原则。为了解决这一问题，GitHub Actions 提供了 matrix（矩阵）策略，使我们能够在保留统一执行流程的前提下，对不同运行环境进行参数化配置。
 
 在这种模式下，测试流程本身只需要定义一次，而操作系统、运行节点、依赖安装方式以及具体的测试命令等平台差异，则通过 matrix 作为配置项传入。GitHub Actions 会基于 matrix 中的每一组配置，自动生成并执行对应的测试任务。首先我们创建文件`test.yml` 并添加以下内容：
-
-首先是 **触发机制**。我们定义了三种触发时机：
-* 当有代码推送到 `dev` 分支时；
-* 当有针对 `dev` 分支的 Pull Request 被创建或更新时；
-* 以及通过 `workflow_dispatch` 允许手动触发。
-
-这种设计体现了**“尽早发现”**的原则。在 Pull Request 阶段就拦截错误，可以避免污染主分支的稳定性，将问题解决在合并之前。
 
 ```yaml
 name: test
@@ -749,10 +768,17 @@ jobs:
             command: bun test:e2e:local
 ```
 
+首先是 **触发机制**。我们定义了三种触发时机：
+* 当有代码推送到 `dev` 分支时；
+* 当有针对 `dev` 分支的 Pull Request 被创建或更新时；
+* 以及通过 `workflow_dispatch` 允许手动触发。
+
+这种设计体现了 **“尽早发现”** 的原则。在 Pull Request 阶段就拦截错误，可以避免污染主分支的稳定性，将问题解决在合并之前。
 
 在该 matrix 中，我们定义了两个测试配置：linux 和 windows。它们共享同一套测试流程，但在运行节点（host）、Playwright 的安装方式、工作目录以及最终执行的测试命令上各自独立，从而准确反映不同操作系统下的真实运行环境。这里有两个细节值得注意：
 1. 我们将 fail-fast 设置为 false。这是因为在 CI 环境中，Windows 任务通常比 Linux 慢。如果 Linux 任务失败了，我们通常仍希望看到 Windows 任务的结果，以便判断这是否是一个特定平台的 Bug，还是通用逻辑的错误。
 2. Linux 环境下运行 Playwright 通常需要额外安装系统依赖（--with-deps），而 Windows 环境通常不需要或已预置，Matrix 让我们能轻松处理这种差异。
+3. 我们在linux测试命令前添加了 git config --global user.email 和 git config --global user.name，这是因为在执行bun turbo test时，子包中可能存在git操作，Git 要求必须配置 user.email 和 user.name 否则会报错, 在后续的子包的单元测试的编写中，我们会用到这些配置。
 
 定义好了矩阵，下一步是将这些配置映射到真实的虚拟机上。
 
@@ -776,6 +802,9 @@ jobs:
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
+
+      - name: Run Test
+        run: ${{ matrix.settings.command }}
 ```
 第一步，我们需要检出代码仓库到CI运行环境中。使用官方的checkout Action版本4，确保获取最新代码和完整的Git历史。默认的checkout使用只读权限，为了能够在后续步骤中执行如bun install等需要写入权限的操作，我们需要传递token参数，将GITHUB_TOKEN作为写入权限的凭证。
 第二步，我们使用自定义的setup-bun Action，将Bun安装到CI运行环境中。该Action会利用缓存机制，避免重复安装，显著提升构建效率。
@@ -855,7 +884,8 @@ jobs:
 
 EOF
 ```
-首先是 **运行环境**。这里我们指定了 `runs-on: blacksmith-4vcpu-ubuntu-2404`。选择合适的运行环境是 CI 优化的重要一环，使用性能更强的 Runner（如 Blacksmith 提供的实例）可以显著减少 CI 的排队和执行时间，从而加速开发者的反馈循环。整个过程分为三步：
+首先是 **运行环境**。这里我们指定了 `runs-on: ubuntu-latest`。这是 GitHub Actions 提供的标准 Linux 运行环境，由于类型检查（Typecheck）通常是 CPU 密集型任务，标准运行环境已能满足大多数基础构建需求。如果后续项目规模扩大，我们也可以轻松切换到更高性能的 Runner。
+整个过程分为三步：
 1. **检出代码**：这是所有 CI 流程的基石。
 2. **环境准备**：通过 `setup-bun` 初始化运行时环境。这里假设我们已经封装了一个复用的 Action 来统一管理 Bun 的版本和配置，这符合我们在软件工程中推崇的 DRY（Don't Repeat Yourself）原则。
 3. **执行检查**：运行 `bun typecheck`。
@@ -884,3 +914,61 @@ git push origin dev
 配置完成后，项目将具备完整的自动化测试、类型检查能力, 现在我们去github 仓库中，点击Actions按钮，你应该可以看到我们自定义的工作流test、typecheck已经配置好了，并且已经在开始运行了。
 
 后续我们讲从实际问题出发，逐步补充迭代剩余的工作流，例如发布工作流。
+
+
+
+
+## 2.6. 完整的package.json配置
+
+```json
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode",
+  "description": "AI-powered development tool",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.9",
+  "scripts": {
+    "dev": "bun run --cwd packages/opencode src/index.ts",
+    "typecheck": "bun turbo typecheck",
+    "prepare": "husky",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "workspaces": {
+    "packages": [
+      "packages/*"
+    ],
+    "catalog": {
+      "typescript": "5.8.2",
+      "@types/bun": "1.3.5",
+      "@tsconfig/bun": "1.0.9"
+    }
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "catalog:",
+    "husky": "9.1.7",
+    "prettier": "3.8.1",
+    "turbo": "2.5.6"
+  },
+  "dependencies": {
+    "typescript": "catalog:"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anomalyco/opencode"
+  },
+  "license": "MIT",
+  "prettier": {
+    "semi": false,
+    "printWidth": 120
+  },
+  "overrides": {
+    "@types/bun": "catalog:"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
+
+```
