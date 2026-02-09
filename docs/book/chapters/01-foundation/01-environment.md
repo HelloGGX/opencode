@@ -803,8 +803,6 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
-      - name: Run Test
-        run: ${{ matrix.settings.command }}
 ```
 第一步，我们需要检出代码仓库到CI运行环境中。使用官方的checkout Action版本4，确保获取最新代码和完整的Git历史。默认的checkout使用只读权限，为了能够在后续步骤中执行如bun install等需要写入权限的操作，我们需要传递token参数，将GITHUB_TOKEN作为写入权限的凭证。
 第二步，我们使用自定义的setup-bun Action，将Bun安装到CI运行环境中。该Action会利用缓存机制，避免重复安装，显著提升构建效率。
@@ -916,9 +914,7 @@ git push origin dev
 后续我们讲从实际问题出发，逐步补充迭代剩余的工作流，例如发布工作流。
 
 
-
-
-## 2.6. 完整的package.json配置
+## 附录：完整的package.json配置
 
 ```json
 {
