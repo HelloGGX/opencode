@@ -928,6 +928,23 @@ git push origin dev
 
 后续我们讲从实际问题出发，逐步补充迭代剩余的工作流，例如发布工作流。
 
+## 2.6 下一步
+
+恭喜！你已经完成了 OpenCode 项目的基础环境搭建。现在你拥有了：
+- ✅ 完整的 Monorepo 项目结构
+- ✅ Bun + Turbo 构建系统
+- ✅ TypeScript 类型检查
+- ✅ 初步的GitHub Actions CI/CD
+
+在下一章中，我们将：
+1. 实现 `opencode --version` 命令
+2. 创建第一个工具函数
+3. 编写单元测试
+4. 发布第一个版本
+
+继续阅读：[第三章：实现第一个 CLI 命令](./02-first-command.md)
+
+
 
 ## 附录：完整的package.json配置
 

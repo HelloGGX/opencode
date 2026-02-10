@@ -112,13 +112,13 @@ class SimpleAgent {
 
 我们可以将以上代码与真实的 LLM 编码助手场景进行对应：
 
-energy 代表资源约束，在真实场景中对应 Context Window 的剩余空间，或者是用户的 API 预算。每次 Agent 执行操作，都会消耗能量。当能量耗尽时，无论任务是否完成，Agent 都必须强制停止。这是为了防止程序陷入死循环而设计的「熔断机制」。
+**energy** 代表资源约束，在真实场景中对应 Context Window 的剩余空间，或者是用户的 API 预算。每次 Agent 执行操作，都会消耗能量。当能量耗尽时，无论任务是否完成，Agent 都必须强制停止。这是为了防止程序陷入死循环而设计的「熔断机制」。
 
-goal 对应 System Prompt，它定义了 Agent 的行为边界，例如「你是一个资深的 TypeScript 程序员」。
+**goal** 对应 System Prompt，它定义了 Agent 的行为边界，例如「你是一个资深的 TypeScript 程序员」。
 
-progress 是一个典型的可变状态。在编码助手中，它代表当前代码库的状态、报错信息或文件内容。随着 Agent 的运行，这个状态会不断发生变化。
+**progress** 是一个典型的可变状态。在编码助手中，它代表当前代码库的状态、报错信息或文件内容。随着 Agent 的运行，这个状态会不断发生变化。
 
-targetCondition 是验收条件。Agent 怎么知道自己做完了？在前面的简单循环中，Agent 是不知道停下来的。而在状态机模型中，当 progress 达到 targetCondition（例如：单元测试全绿），即视为任务达成。在这个简化示例中，我们用数值来表示进度，但在真实场景中，验收条件可能是更复杂的判定逻辑。
+**targetCondition** 是验收条件。Agent 怎么知道自己做完了？在前面的简单循环中，Agent 是不知道停下来的。而在状态机模型中，当 progress 达到 targetCondition（例如：单元测试全绿），即视为任务达成。在这个简化示例中，我们用数值来表示进度，但在真实场景中，验收条件可能是更复杂的判定逻辑。
 
 ### 感知-决策-行动循环
 
@@ -596,30 +596,10 @@ Zod 的 Schema 可以通过 .describe() 方法生成描述文档，系统可以�
 
 ```typescript
 // Bash 工具定义示例
-export const BashTool = Tool.define("bash", {
-  description: "Execute a shell command",
-  parameters: z.object({
-    command: z.string().describe("The command to execute"),
-    timeout: z.number().describe("Optional timeout in milliseconds").optional(),
-    workdir: z.string().describe(
-      "The working directory to run the command in. Defaults to current directory.",
-    ).optional(),
-    description: z.string().describe(
-      "Clear, concise description of what this command does in 5-10 words.",
-    ).optional(),
-  }),
-  async execute(params, ctx) {
-    const cwd = params.workdir || Instance.directory
-    const result = await exec(params.command, { cwd, timeout: params.timeout })
-    return {
-      title: params.description || params.command,
-      metadata: {
-        exit: result.exitCode,
-        output: result.stdout.slice(0, 30000),
-      },
-      output: result.stdout,
-    }
-  },
+export const BashTool = Tool.define("bash", async () => {
+  const shell = Shell.acceptable()
+  log.info("bash tool using shell", { shell })
+  return { description, parameters, execute }
 })
 ```
 
@@ -691,7 +671,9 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Rules
 }
 ```
 
-可以看到，OpenCode 使用 findLast() 算法来寻找最后一个匹配的规则。系统并非简单地使用「后定义覆盖前定义」的方式。如果没有任何规则匹配，系统默认返回 ask 动作。这种设计确保了配置的可预测性：当你无法确定某个操作会发生什么时，系统会安全地询问用户。
+可以看到，OpenCode 使用 `findLast()` 算法实现了**「最后匹配规则优先」**的语义。这意味着当多条规则都匹配时，最后定义的规则会生效。这种设计是有意为之，它允许渐进式细化权限配置：先定义通用规则（如 `bash: { "*": "allow" }`），然后定义特定覆盖（如 `bash: { "rm -rf *": "deny" }`）。
+
+关键在于这是**「最后匹配的规则」**而不是简单的「最后一条规则」——规则必须同时满足 permission 和 pattern 的通配符匹配才会被考虑。如果没有任何规则匹配，系统默认返回 `ask` 动作。这种设计确保了配置的可预测性：当你无法确定某个操作会发生什么时，系统会安全地询问用户。
 
 ## 1.0.4 技术栈选型理由
 
@@ -813,6 +795,8 @@ OpenCode 主要将认证用于 AI Provider 的 API 访问控制。Auth 模块管
 
 会话对象不仅包含唯一的标识符，还维护着对话所需的所有状态信息：MessageV2 类型的消息历史记录了所有的用户输入和 AI 响应；系统提示词定义了 AI 的角色定位和行为规范；工具清单列出了 AI 可以调用的所有工具及其描述定义；配置参数控制着对话的各种行为选项。
 
+Session ID 的生成采用了特殊的设计。系统使用 6 字节十六进制时间戳（12 个字符）与 14 位 base62 随机字符的组合，总长度为 26 个字符。为了确保即使在同一毫秒内生成多个 ID 也不会冲突，时间戳部分实际上是 `Date.now() * 0x1000 + counter`，其中 counter 是一个单调递增的计数器。Session ID 使用降序变体（通过按位取反实现），确保最新创建的会话在排序时位于最前面。
+
 会话处理器（SessionProcessor）是处理 AI 流式响应的核心组件。Processor 实现了主处理循环，不断接收 AI 的响应并决定下一步操作。当 Processor 创建时，它首先初始化一个消息对象用来存储 AI 的响应内容，然后进入处理循环，在每次循环中调用 LLM.stream 方法发起 AI 调用，将 AI 的输出逐步追加到消息中。
 
 权限配置采用动态加载机制。只有当 AI 在响应中请求调用某个工具时，Processor 才会触发权限检查流程。权限规则来自 Agent.permission 和 Session.permission 两个来源，系统通过 PermissionNext.merge 函数动态合并这两个来源的规则。
@@ -847,11 +831,42 @@ Processor 在工具执行前需要获取工具定义，这涉及 ToolRegistry �
 
 #### 第六阶段：事件广播与多客户端同步
 
-在整个处理过程中，EventBus 扮演着连接各组件的神经系统角色。EventBus 支持两种事件传递模式：内存事件在单个进程内通过订阅者列表直接传递；全局事件通过 GlobalBus 配合 SSE（Server-Sent Events）实现跨进程广播。
+在整个处理过程中，EventBus 扮演着连接各组件的神经系统角色。OpenCode 采用了**双总线架构**来实现灵活的事件分发：
 
-不同的客户端通过不同的方式订阅全局事件：
-- **TUI 客户端**：通过 SDK 客户端订阅服务器的 SSE 事件流，创建异步迭代器接收服务器推送的事件
-- **Desktop/Web 客户端**：通过 SDK 的 global.event() 方法订阅全局事件，使用 SSE 协议保持长连接
+**1. 实例本地总线（Bus）**
+每个项目实例维护独立的事件总线，用于同一进程内的模块间通信。当调用 `Bus.publish()` 时，系统会：
+- 查找订阅了该特定事件类型的所有订阅者
+- 同时查找订阅了通配符 `"*"` 的所有订阅者
+- 通过 `Promise.all()` 并发执行所有订阅者回调
 
-**事件队列机制**：客户端维护一个事件队列来优化 UI 更新性能。新收到的事件先进入队列而不是立即处理，如果两次事件的时间间隔小于 16 毫秒，系统会将后续事件批量处理后再统一渲染，避免频繁的 UI 重渲染。
+这种并发执行机制意味着订阅者之间没有执行顺序保证，每个订阅者都应该是独立的、无副作用依赖的。
+
+**2. 全局总线（GlobalBus）**
+为了实现跨进程通信（如 TUI 客户端与服务器进程之间的同步），`Bus.publish()` 在触发本地订阅者的同时，还会将事件发送到 GlobalBus。GlobalBus 通过 SSE（Server-Sent Events）将事件推送给所有连接的客户端：
+
+```typescript
+export async function publish<Definition extends BusEvent.Definition>(
+  def: Definition,
+  properties: z.output<Definition["properties"]>,
+) {
+  const payload = { type: def.type, properties }
+  
+  // 1. 触发本地订阅者（特定事件 + 通配符）
+  const pending = []
+  for (const key of [def.type, "*"]) {
+    const match = state().subscriptions.get(key)
+    for (const sub of match ?? []) {
+      pending.push(sub(payload))
+    }
+  }
+  
+  // 2. 同时广播到 GlobalBus（跨进程）
+  GlobalBus.emit("event", {
+    directory: Instance.directory,
+    payload,
+  })
+  
+  return Promise.all(pending)
+}
+```
 
