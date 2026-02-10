@@ -789,12 +789,10 @@ on:
       - dev
   pull_request:
   workflow_dispatch:
-
 jobs:
   test:
-    name: test (${{ matrix.settings.name }})
     strategy:
-      fail-fast: false
+      fail-fast: false # 关键：避免单点失败导致整个矩阵立即终止，我们需要看到所有平台的测试结果
       matrix:
         settings:
           - name: linux
@@ -802,15 +800,14 @@ jobs:
             playwright: bunx playwright install --with-deps
             workdir: .
             command: |
-              git config --global user.email "你的邮箱"
-              git config --global user.name "你的用户名"
+              git config --global user.email "XXXX"
+              git config --global user.name "opencode"
               bun turbo test
           - name: windows
             host: windows-latest
             playwright: bunx playwright install
             workdir: packages/app
             command: bun test:e2e:local
-    runs-on: ${{ matrix.settings.host }}
 ```
 
 首先是 **触发机制**。我们定义了三种触发时机：
@@ -820,7 +817,7 @@ jobs:
 
 这种设计体现了 **“尽早发现”** 的原则。在 Pull Request 阶段就拦截错误，可以避免污染主分支的稳定性，将问题解决在合并之前。
 
-在该 matrix 中，我们定义了两个测试配置：linux 和 windows。它们共享同一套测试流程，但在运行节点（host）、Playwright 的安装方式、工作目录以及最终执行的测试命令上各自独立，从而准确反映不同操作系统下的真实运行环境。这里有两个细节值得注意：
+在该 matrix 中，我们定义了两个测试配置：linux 和 windows。它们共享同一套测试流程，但在运行节点（host）、Playwright 的安装方式、工作目录以及最终执行的测试命令上各自独立，从而准确反映不同操作系统下的真实运行环境。这里有三个细节值得注意：
 1. 我们将 fail-fast 设置为 false。这是因为在 CI 环境中，Windows 任务通常比 Linux 慢。如果 Linux 任务失败了，我们通常仍希望看到 Windows 任务的结果，以便判断这是否是一个特定平台的 Bug，还是通用逻辑的错误。
 2. Linux 环境下运行 Playwright 通常需要额外安装系统依赖（--with-deps），而 Windows 环境通常不需要或已预置，Matrix 让我们能轻松处理这种差异。
 3. 我们在linux测试命令前添加了 git config --global user.email 和 git config --global user.name，这是因为在执行bun turbo test时，子包中可能存在git操作，Git 要求必须配置 user.email 和 user.name 否则会报错, 在后续的子包的单元测试的编写中，我们会用到这些配置。
@@ -833,10 +830,8 @@ jobs:
       run:
         shell: bash
 ```
-通过将 runs-on 设置为 ${{ matrix.settings.host }}，GitHub Actions 会为矩阵中的每组配置创建一个独立的 Job，并在指定的操作系统（如 Linux 或 Windows）上运行相同的测试步骤。这样，Lin
-EOF Win
-
-这个测试配置采用了矩阵策略（matrix strategy），能够在多个平台上并行运行测试，确保代码在不同操作系统上的兼容性。ts.run.shell: bash`。我们知道，Windows 的原生 Shell 是 PowerShell 或 CMD，而 Linux 是 Bash。如果任由默认行为发生，我们在编写后续的 steps 时，就需要区分这两者的差异。通过设置 `shell: bash`，强制 GitHub Actions 在 Windows 环境中也使用 Git Bash 来执行命令, 这使得我们可以放心地在 steps 中使用 rm -rf、export 等标准 Linux 命令，而无需为 Windows 编写繁琐的 PowerShell 替代方案。。
+通过将 runs-on 设置为 ${{ matrix.settings.host }}，GitHub Actions 会为矩阵中的每组配置创建一个独立的 Job，并在指定的操作系统（如 Linux 或 Windows）上运行相同的测试步骤。这样，Linux 和 Windows 的差异就直接由运行环境来处理，而不需要在代码中用 if-else 分支来手动区分。
+但这里更值得玩味的是 `defaults.run.shell: bash`。我们知道，Windows 的原生 Shell 是 PowerShell 或 CMD，而 Linux 是 Bash。如果任由默认行为发生，我们在编写后续的 steps 时，就需要区分这两者的差异。通过设置 `shell: bash`，强制 GitHub Actions 在 Windows 环境中也使用 Git Bash 来执行命令, 这使得我们可以放心地在 steps 中使用 rm -rf、export 等标准 Linux 命令，而无需为 Windows 编写繁琐的 PowerShell 替代方案。。
 
 接下来我们配置steps：
 
@@ -856,7 +851,7 @@ EOF Win
 
 后续步骤涉及测试库的安装和执行测试命令。根据不同平台的配置，我们需要在不同的工作目录下执行命令。从前面可以看出，我们使用playwright作为测试库，它是微软开发的现代化端到端测试工具，用于测试Web应用程序在不同浏览器中的行为。我们这里暂时不编写后续的steps，等到我们开发子包opencode时， 开始编写测试用例，才会涉及该部分的CI/CD流程，因此放到后续完善。
 
-当前的测试工作流配置如下：
+当前的完整的测试工作流配置如下：
 
 ```yaml
 name: test
@@ -933,12 +928,11 @@ EOF
 整个过程分为三步：
 1. **检出代码**：这是所有 CI 流程的基石。
 2. **环境准备**：通过 `setup-bun` 初始化运行时环境。这里假设我们已经封装了一个复用的 Action 来统一管理 Bun 的版本和配置，这符合我们在软件工程中推崇的 DRY（Don't Repeat Yourself）原则。
-3. **执行检查**：运行 `bun typecheck`。
+3. **执行检查**：运行 `bun typecheck`。这会触发项目中的类型检查脚本，确保代码符合 TypeScript 类型规范。
 
 需要注意的是，这里的 `bun typecheck` 通常是在 `package.json` 中定义的脚本，其底层往往调用了 `"typecheck": "tsc --noEmit"`。`--noEmit` 标志非常关键，它告诉编译器：“我们只需要检查类型是否正确，不需要输出任何编译后的文件。”
 
 通过这样一个独立且严谨的工作流，我们成功地将类型安全检查与构建过程解耦。
-
 
 这种配置方式具有以下优势：
 
