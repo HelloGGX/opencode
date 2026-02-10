@@ -41,7 +41,8 @@ git config user.email "你的邮箱@example.com"
 - Bun 运行时（Runtime）：基于 Apple 的 JavaScriptCore 引擎开发，支持直接执行 .js、.ts、.jsx、.tsx 等文件，无需额外转译工具。其启动速度显著快于 Node.js，并且具有内置 TypeScript 支持。
 - 包管理器（Package Manager）：兼容 npm/yarn 的协议，支持全局缓存和 Workspaces，在 Monorepo 环境中可实现跨包依赖自动链接、重复依赖去重及高效安装。
 - 测试运行器与打包器：提供 Jest 兼容测试框架和内置打包能力，可直接运行项目测试和生成生产构建，无需额外配置。
-Bun 的集成设计避免了在同一项目中引入多个工具（如 npm + Jest + esbuild 等）的碎片化复杂度，从而简化了配置和维护
+
+Bun 的集成设计避免了在同一项目中引入多个工具（如 npm + Jest + esbuild 等）的碎片化复杂度，从而简化了配置和维护。
 
 你可以通过 Bun 官网提供的安装脚本，在 Windows、macOS 或 Linux 上快速安装 Bun。安装后，运行以下命令确认是否安装成功：
 
@@ -69,9 +70,7 @@ source ~/.bashrc
 
 现在再次执行`bun --version`，你应该能看到Bun的版本号了。请注意，参考项目指定使用`bun@1.3.9`版本，如果你的Bun版本与此不同，可能会遇到兼容性问题。在这种情况下，你可以使用bun upgrade升级到最新版本, 笔者在写这篇文档时, Bun的最新版本是`1.3.9`
 
-```bash
-bun upgrade
-```
+如果遇到版本兼容问题，可以使用 `bun upgrade` 升级到与项目兼容的版本（本文档编写时推荐使用 1.3.x 版本系列）。
 
 对于Windows用户，Bun提供了专门的安装程序。可以通过PowerShell执行以下命令：
 
@@ -92,13 +91,14 @@ bun --help
 ### 2.2.2 配置Bun包管理器设置
 
 Bun的配置主要依赖于标准的package.json和tsconfig.json文件。对于需要Bun特定配置的场景，可以通过bunfig.toml文件进行额外设置。这个文件是可选的，没有它Bun也可以正常工作，但在某些高级场景下能够提供更精细的控制。
-这是因为bunfig.toml 的设计目标并不是成为一个“全量配置中心”。它并不试图替代 package.json，也不承担构建系统或运行时参数集中管理的职责。从设计定位上看，bunfig.toml 更接近于一个 “Bun 行为补丁层”，主要用于补充以下几类场景：
+
+这是因为bunfig.toml 的设计目标并不是成为一个"全量配置中心"。它并不试图替代 package.json，也不承担构建系统或运行时参数集中管理的职责。从设计定位上看，bunfig.toml 更接近于一个 "Bun 行为补丁层"，主要用于补充以下几类场景：
 
 - 安装行为的默认策略（如 npm registry 来源）
 - 与 Bun CLI 行为直接相关的选项
 - 无法通过 package.json 合理表达的 Bun 专有设置
 
-这种克制的设计，有意避免了配置碎片化的问题，同时也降低了项目在不同运行时之间迁移的复杂度。当项目需要对 Bun 的默认行为进行明确约束时，可以在项目根目录创建 bunfig.toml 文件。 具体如下：
+这种克制的设计，有意避免了配置碎片化的问题，同时也降低了项目在不同运行时之间迁移的复杂度。当项目需要对 Bun 的默认行为进行明确约束时，可以在项目根目录创建 bunfig.toml 文件。具体如下：
 
 ```bash
 cat > bunfig.toml << 'EOF'
@@ -109,8 +109,10 @@ EOF
 
 cat bunfig.toml
 ```
+
 需要特别说明的是`exact = true`的配置项。它表示让安装时锁定确切版本（不写入 ^ 或 ~ 前缀），确保可复现构建结果。
-目前，bunfig.toml 中最常用且稳定的配置节是 [install]，用于影响 bun install 及相关依赖解析行为。Bun 默认启用依赖缓存机制，但缓存行为并未通过 bunfig.toml 暴露为可自由组合的开关。Bun 的构建行为（如 bun build）以及运行时参数，通常通过：命令行参数、package.json 中的 scripts、环境变量来进行控制。因此，在工程实践中，应避免将 bunfig.toml 误用为类似 npm、yarn 或 webpack 的“集中式配置文件”。
+
+目前，bunfig.toml 中最常用且稳定的配置节是 [install]，用于影响 bun install 及相关依赖解析行为。Bun 默认启用依赖缓存机制，但缓存行为并未通过 bunfig.toml 暴露为可自由组合的开关。Bun 的构建行为（如 bun build）以及运行时参数，通常通过：命令行参数、package.json 中的 scripts、环境变量来进行控制。因此，在工程实践中，应避免将 bunfig.toml 误用为类似 npm、yarn 或 webpack 的"集中式配置文件"。
 
 ## 2.3 Monorepo架构配置
 
@@ -211,7 +213,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 这份.gitignore配置非常全面，涵盖了Node.js/Bun项目的所有常见场景，比手动创建的要完善得多。
 
-bun init 生成的配置包含了项目的基本结构，但为了构建支持多包复用（Monorepo）的开发环境，并利用 Catalog 功能统一管理依赖版本，我们需要将配置文件更新为如下内容
+bun init 生成的配置包含了项目的基本结构，但为了构建支持多包复用（Monorepo）的开发环境，并利用 Catalog 功能统一管理依赖版本，我们需要将配置文件更新为如下内容：
 
 ```bash
 cat > package.json << 'EOF'
@@ -225,7 +227,7 @@ cat > package.json << 'EOF'
   "packageManager": "bun@1.3.9",
   "scripts": {
     "dev": "echo '开发模式启动...'",
-    "typecheck": "echo '类型检查...'",
+    "typecheck": "echo '类型检查...'"
   },
   "workspaces": {
     "packages": [
@@ -233,7 +235,7 @@ cat > package.json << 'EOF'
     ],
     "catalog": {
       "@types/bun": "1.3.5",
-      "typescript": "5.8.2",
+      "typescript": "5.8.2"
     }
   },
   "devDependencies": {
@@ -245,10 +247,6 @@ cat > package.json << 'EOF'
     "url": "https://github.com/yourusername/opencode"
   },
   "license": "MIT",
-  "prettier": {
-    "semi": false,
-    "printWidth": 120
-  },
   "peerDependencies": {
     "typescript": "^5"
   }
@@ -257,6 +255,7 @@ EOF
 
 cat package.json
 ```
+
 让我们详细分析这个配置文件的各个部分：
 
 - `"$schema"`字段指向JSON Schema文件，IDE可以据此提供自动补全和验证功能。虽然这是可选的，但它能够大大提升开发体验，建议始终保留。
@@ -273,10 +272,9 @@ cat package.json
 - `"dependencies"`字段定义了项目运行时需要的依赖。。
 - `"repository"`字段定义了项目的存储库信息，用于发布和下载。在这个配置中，我们使用了GitHub存储库`https://github.com/yourusername/opencode`。
 - `"license"`字段定义了项目的许可证。这个字段是可选的，但建议每个项目都包含一个有效的许可证。在这个配置中，我们使用了MIT许可证。
-- `"prettier"`字段定义了项目的Prettier配置。Prettier是一个代码格式化工具，它可以自动格式化代码，保持一致的代码风格。在这个配置中，我们设置了`"semi": false`表示不使用分号，`"printWidth": 120`表示每行代码最多120个字符。
-- `"peerDependencies"`字段定义了项目运行时需要的依赖，但这些依赖不是直接被项目使用，而是被其他包引用。大白话：它不是“我需要什么”，而是“我希望你已经有什么”。从更工程化的视角来看，peerDependencies 本质上是在做一件事：把版本控制权上移一层。它让库的作者放弃对某些关键依赖的控制权，换取整个生态的一致性与可组合性。
+- `"prettier"`字段定义了项目的Prettier配置。Prettier是一个代码格式化工具，它可以自动格式化代码，保持一致的代码风格。
 
-前文提到，我们的项目是一个基于 Typescript 的 Monorepo 项目，我们将子包设计为独立的库，每个子包都可被外部项目直接引用。通过 Bun 工作区（workspaces）机制，将 TypeScript、Bun 类型库等核心工具集中在根层管理，避免多子包间的版本不一致和重复安装问题。借助 Bun 的 catalogs 功能，可实现依赖版本的统一控制和更简洁的依赖树结构，从而提升整个工作区的开发体验与可维护性。因此，我们建议将 @types/bun 、 typescript 等类型相关的核心依赖纳入 Catalog 管理。
+**重要说明**：`"peerDependencies"`字段定义了项目运行时需要的依赖，但这些依赖不是直接被项目使用，而是被其他包引用。从更工程化的视角来看，peerDependencies 本质上是在做一件事：把版本控制权上移一层。它让库的作者放弃对某些关键依赖的控制权，换取整个生态的一致性与可组合性。
 
 同时为了进一步确保依赖版本的一致性，Bun 提供了 `overrides` 配置。这个配置可以强制所有子包使用根目录定义的特定依赖版本，即使子包中声明了不同的版本。
 
@@ -286,14 +284,18 @@ cat package.json
 }
 ```
 
+前文提到，我们的项目是一个基于 Typescript 的 Monorepo 项目，我们将子包设计为独立的库，每个子包都可被外部项目直接引用。通过 Bun 工作区（workspaces）机制，将 TypeScript、Bun 类型库等核心工具集中在根层管理，避免多子包间的版本不一致和重复安装问题。借助 Bun 的 catalogs 功能，可实现依赖版本的统一控制和更简洁的依赖树结构，从而提升整个工作区的开发体验与可维护性。
 
 ### 2.3.2 创建子包opencode的目录结构
 
 现在我们已经定义了Monorepo的结构，接下来需要创建第一个核心子包opencode的配置文件，它实现了主要的 CLI 应用、服务器和业务逻辑。这是我们实现`opencode --version`命令的核心，我们暂且只是创建其目录和配置文件，主要目的是方便说明和测试我们的Monorepo架构。
 
-进入packages/opencode目录并创建包配置文件：
+首先创建 packages/opencode 目录：
 
 ```bash
+mkdir -p packages/opencode
+mkdir -p packages/opencode/src
+touch packages/opencode/src/index.ts
 cd packages/opencode
 cat > package.json << 'EOF'
 {
@@ -304,10 +306,10 @@ cat > package.json << 'EOF'
   "license": "MIT",
   "private": true,
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "bun test",
     "build": "bun run script/build.ts",
-    "dev": "bun run --conditions=browser ./src/index.ts",
+    "dev": "bun run --conditions=browser ./src/index.ts"
   },
   "bin": {
     "opencode": "./bin/opencode"
@@ -325,23 +327,26 @@ EOF
 
 这个配置文件有几个值得注意的点：
 
-`"private": true`, 这个设置非常重要。opencode包只该项目中内部使用，不会被发布到npm仓库。
-`"bin"`字段定义了CLI入口点。`"opencode": "./bin/opencode"`告诉包管理器，当用户安装这个包时，需要创建一个名为`opencode`的命令，指向bin目录下的opencode脚本文件。
-`"exports"`字段定义了包的导出路径。`"./*": "./src/*.ts"`告诉包管理器，当用户导入opencode时，应该从src目录下的对应文件中导出。
-`"devDependencies"`使用了`"catalog:"`前缀。这意味着这些依赖的版本不是直接写在子包中，而是从根目录的catalog中读取。这种方式确保了opencode包的@types/bun和typescript依赖都统一使用根目录的版本号，避免了版本冲突和不一致的问题。
+- `"private": true`：这个设置非常重要。opencode包只在该项目中内部使用，不会被发布到npm仓库。
+- `"bin"`字段定义了CLI入口点。`"opencode": "./bin/opencode"`告诉包管理器，当用户安装这个包时，需要创建一个名为`opencode`的命令，指向bin目录下的opencode脚本文件。
+- `"exports"`字段定义了包的导出路径。`"./*": "./src/*.ts"`告诉包管理器，当用户导入opencode时，应该从src目录下的对应文件中导出。
+- `"devDependencies"`使用了`"catalog:"`前缀。这意味着这些依赖的版本不是直接写在子包中，而是从根目录的catalog中读取。这种方式确保了opencode包的@types/bun、typescript依赖都统一使用根目录的版本号，避免了版本冲突和不一致的问题。
+
+**重要说明**：上面的配置是一个精简版本。在实际的大型项目中，子包通常会有更复杂的依赖列表，包括特定于该包的开发工具、语言服务器协议实现、打包器配置等。读者在跟随本教程时，可以先使用这个精简配置，随着项目复杂度的增加再逐步添加必要的依赖。
 
 ### 2.3.3 配置 Turbo 构建系统
 
-在Monorepo项目中，随着子包数量的逐步增多，构建任务的管理往往会变得异常繁杂，因为不同的包可能配备各自独立的构建脚本，而且包与包之间常常存在复杂的依赖链条，例如A包的构建必须在B包之后才能启动，同时每次代码修改后如果盲目重新构建所有包，就会导致严重的资源和时间浪费。Turbo作为一款专为这类场景设计的构建编排工具，正好能有效缓解这些痛点，它的核心优势体现在几个关键方面：通过增量构建机制，只针对发生变化的包及其下游依赖进行处理，从而大幅压缩整体构建时长；借助智能缓存功能，自动存储并复用未改动包的构建产物，避免无谓的重复计算；此外，它还能精细管理任务间的依赖关系，确保所有操作按逻辑顺序顺畅执行；最后，利用并行执行策略，对那些相互独立的子任务自动分配多核CPU资源，进一步提升效率。
-要初始化Turbo配置，首先我们在根目录下安装turbo包：
+在Monorepo项目中，随着子包数量的逐步增多，构建任务的管理往往会变得异常繁杂，因为不同的包可能配备各自独立的构建脚本，而且包与包之间常常存在复杂的依赖链条，例如A包的构建必须在B包之后才能启动，同时每次代码修改后如果盲目重新构建所有包，就会导致严重的资源和时间浪费。
+
+Turbo作为一款专为这类场景设计的构建编排工具，正好能有效缓解这些痛点，它的核心优势体现在几个关键方面：通过增量构建机制，只针对发生变化的包及其下游依赖进行处理，从而大幅压缩整体构建时长；借助智能缓存功能，自动存储并复用未改动包的构建产物，避免无谓的重复计算；此外，它还能精细管理任务间的依赖关系，确保所有操作按逻辑顺序顺畅执行；最后，利用并行执行策略，对那些相互独立的子任务自动分配多核CPU资源，进一步提升效率。
+首先安装Turbo：
 
 ```bash
-bun install turbo
+bun add -D turbo
 ```
-然后创建turbo.json文件，内容包括一个标准的JSON schema引用，以及tasks字段来定义核心构建任务，运行下面的命令创建turbo.json文件：
+接着初始化Turbo配置，切换到项目根目录，然后通过命令行创建turbo.json文件：
 
 ```bash
-cd ~/workspace/opencode
 cat > turbo.json << 'EOF'
 {
   "$schema": "https://turborepo.com/schema.json",
@@ -360,32 +365,43 @@ cat > turbo.json << 'EOF'
 EOF
 cat turbo.json
 ```
-我们可以看到 typecheck任务采用空配置，这意味着Turbo会自动在所有子包中运行对应的typecheck脚本，通常对应package.json中的类型检查命令，由于它没有显式依赖，因此可以全局并行执行，提高检查速度。build任务则设置了dependsOn为["^build"]，这里的^符号巧妙地表示依赖于上游所有子包的build任务，这里的“上游”指的就是当前包的依赖项（Dependencies），同时outputs指定为["dist/**"]，用于精准缓存构建输出如dist目录下的文件，确保增量复用。opencode#test任务专属于名为opencode的子包，它依赖于上游的build任务，通过dependsOn ["^build"]来保证测试前已完成必要构建，而outputs设为空数组，因为测试通常不产生持久文件，这有助于避免无效缓存。整个配置完成后，可以通过cat turbo.json验证文件内容，确保一切就绪。
 
-当运行 turbo run build 时，Turbo 会执行以下步骤：
+让我们详细分析这个Turbo配置：
+
+- `typecheck`任务采用空配置，这意味着Turbo会自动在所有子包中运行对应的typecheck脚本。由于它没有显式依赖，因此可以全局并行执行，提高检查速度。
+- `build`任务设置了`dependsOn: ["^build"]`，这里的`^`符号巧妙地表示依赖于上游所有子包的build任务。这里的"上游"指的就是当前包的依赖项（Dependencies）。同时`outputs`指定为`["dist/**"]`，用于精准缓存构建输出如dist目录下的文件，确保增量复用。
+- `opencode#test`任务专属于名为opencode的子包，它依赖于上游的build任务，通过`dependsOn ["^build"]`来保证测试前已完成必要构建，而`outputs`设为空数组，因为测试通常不产生持久文件，这有助于避免无效缓存。
+
+当运行 `turbo run build` 时，Turbo 会执行以下步骤：
 1. 构建依赖图，确定包的构建顺序
 2. 先构建无依赖的包（如 util、sdk）
 3. 再构建依赖它们的包（如 plugin、app）
 4. 最后构建 opencode（核心包）
 
-当运行 turbo run test 时：
+当运行 `turbo run test` 时：
 1. 先执行所有包的 build 任务
 2. 然后并行执行 opencode 的测试任务
 
+接下来，更新根目录的 package.json 添加 Turbo 相关的脚本：
 
-接下来，更新根目录的 package.json 添加 Turbo 相关的脚本,这里我们先替换script中的typecheck脚本为`"typecheck": "turbo run typecheck"`
 ```json
 {
   "scripts": {
-    "typecheck": "turbo run typecheck",
+    "typecheck": "bun turbo typecheck"
   }
 }
 ```
-该脚本会读取 turbo.json 配置，找到所有包含 typecheck 脚本的包，并根据依赖图并行运行所有子包的 TypeScript 类型检查。后面我们的各子包会普遍定义命令 "typecheck": "tsgo --noEmit"
+
+该脚本会读取 turbo.json 配置，找到所有包含 typecheck 脚本的包，并根据依赖图并行运行所有子包的 TypeScript 类型检查。子包中通常定义 `"typecheck": "tsc --noEmit"` 命令来执行类型检查。
+
+**重要说明**：这里使用 `bun turbo` 而不是直接使用 `turbo` 命令。原因是：
+1. `bun turbo` 会自动使用项目指定的 Bun 版本
+2. 确保在不同开发环境中行为一致
+3. 利用 Bun 的执行效率加速 Turbo 的启动
 
 ### 2.3.4 配置TypeScript编译环境
 
-合理的TypeScript配置对于保证本项目代码质量至关重要。bun init会自动创建一个基础的tsconfig.json用于编辑器智能提示:
+合理的TypeScript配置对于保证本项目代码质量至关重要。bun init会自动创建一个基础的tsconfig.json用于编辑器智能提示：
 
 ```json
 {
@@ -419,13 +435,14 @@ cat turbo.json
 }
 ```
 
-上面的tsconfig.json文件定义了TypeScript的编译选项。它包含了Bun的最佳实践配置，并添加了Monorepo项目需要的编译选项。这对本项目来说，这是一个重要的配置，因为它确保了所有子包的TypeScript代码都能在Bun环境中正确运行和编译。虽然上述 tsconfig.json 详尽地定义了适配 Bun 运行时环境所需的各项参数，但在 Monorepo 架构中，如果在每个子包内都完整复制这一大段配置，不仅造成代码冗余，后续升级维护也极易导致配置不一致。
-为了遵循 DRY (Don't Repeat Yourself) 原则并确保所有子包始终与 Bun 的最新最佳实践保持同步，我们可以引入官方维护的预设配置包 @tsconfig/bun。它将上述所有针对 Bun 优化的编译选项（如 moduleResolution: "bundler", module: "Preserve" 等）封装在内，使我们能够通过继承的方式大幅简化项目配置。”
+上面的tsconfig.json文件定义了TypeScript的编译选项。虽然上述配置详尽地定义了适配 Bun 运行时环境所需的各项参数，但在 Monorepo 架构中，如果在每个子包内都完整复制这一大段配置，不仅造成代码冗余，后续升级维护也极易导致配置不一致。
 
-安装@tsconfig/bun预设配置包：
+为了遵循 DRY (Don't Repeat Yourself) 原则并确保所有子包始终与 Bun 的最新最佳实践保持同步，我们可以引入官方维护的预设配置包 @tsconfig/bun。它将上述所有针对 Bun 优化的编译选项（如 `moduleResolution: "bundler"`、`module: "Preserve"` 等）封装在内，使我们能够通过继承的方式大幅简化项目配置。
+
+首先，安装 @tsconfig/bun 预设配置包：
 
 ```bash
-bun install @tsconfig/bun
+bun add -d @tsconfig/bun
 ```
 
 同时考虑到各个子包都需要依赖@tsconfig/bun，我们需要确保各个子包的"@tsconfig/bun"版本和根目录的版本保持一致，因此在根目录的package.json中添加`"catalog": { "@tsconfig/bun": "1.0.9" }`。并确保在根目录和未来新增的子包的package.json中添加`"devDependencies": {"@tsconfig/bun": "catalog:"}`
@@ -444,8 +461,8 @@ bun install @tsconfig/bun
     "@types/bun": "catalog:",
   }
 ```
+根目录下的tsconfig.json配置内容可以简化为：
 
-接下来根目录下的tsconfig.json配置内容可以简化为：
 ```json
 {
   "$schema": "https://json.schemastore.org/tsconfig",
@@ -453,7 +470,8 @@ bun install @tsconfig/bun
   "compilerOptions": {}
 }
 ```
-同时各子包中的tsconfig.json配置可以继承@tsconfig/bun的配置,并添加自定义的编译选项，我们以opencode包为例：
+
+各子包中的tsconfig.json可以继承@tsconfig/bun的配置，并添加自定义的编译选项。我们以opencode包为例：
 
 ```json
 {
@@ -473,6 +491,7 @@ bun install @tsconfig/bun
   }
 }
 ```
+
 后续的章节在讲到开发opencode包时，会详细说明以上配置的具体细节。
 
 ## 2.4 代码质量与Git工作流配置
@@ -488,6 +507,7 @@ Prettier是一个强大的代码格式化工具，能够自动格式化JavaScrip
 ```bash
 bun add -d prettier
 ```
+
 接下来创建Prettier配置文件`.prettierrc`，定义项目的代码格式化规则。虽然Prettier有合理的默认配置，但我们可以根据项目需求进行微调：
 
 ```json
@@ -502,6 +522,7 @@ bun add -d prettier
   "arrowParens": "avoid"
 }
 ```
+
 在我们的Monorepo项目中，我们希望所有子包的代码都符合相同的格式化规则。因此，我们只需要在根目录的package.json中配置一个全局的Prettier配置：
 
 ```json
@@ -511,7 +532,7 @@ bun add -d prettier
   }
 ```
 
-同时，创建`.prettierignore`文件来指定不需要格式化的文件, 在这里我们仅忽略了以下文件：
+同时，创建`.prettierignore`文件来指定不需要格式化的文件：
 
 ```bash
 cat > .prettierignore << 'EOF'
@@ -549,7 +570,15 @@ bun run husky init
 ```
 
 这会在项目根目录自动创建`.husky`文件夹，该文件夹中包含了一些默认的 Git 钩子脚本，如 pre-commit、pre-push 等。
-但并不是每个开发者都会知道需要手动执行 `bun run husky init` 命令来初始化Husky。因此，我们可以在项目根目录的 package.json 的scripts手动添加命令 `"prepare": "husky"`，它会在依赖安装完成后自动初始化 Husky 并确保 Git Hooks 生效。
+需要说明的是，在最新版本的 Husky 中，`bun run husky init` 会自动在 package.json 的 scripts 中添加 `"prepare": "husky"` 命令，无需手动添加。这个命令会在依赖安装完成后自动初始化 Husky 并确保 Git Hooks 生效。
+
+```json
+{
+  "scripts": {
+    "prepare": "husky"
+  }
+}
+```
 
 接着我们创建pre-push钩子，确保在推送代码前进行类型检查：
 
@@ -579,7 +608,11 @@ EOF
 
 chmod +x .husky/pre-push
 ```
-这个脚本会在 git push 命令执行前 自动运行，确保开发者使用的 Bun 版本与项目要求的版本兼容，推送前的代码通过了 TypeScript 类型检查，所有开发者使用相同的开发环境，避免因版本差异导致的问题。
+
+这个脚本会在 `git push` 命令执行前自动运行，确保：
+1. 开发者使用的 Bun 版本与项目要求的版本兼容
+2. 推送前的代码通过了 TypeScript 类型检查
+3. 所有开发者使用相同的开发环境，避免因版本差异导致的问题
 
 现在我们测试一下pre-push钩子是否正常工作：
 
@@ -610,7 +643,9 @@ Cached:    1 cached, 1 total
 
 
 ### 2.4.3 配置EditorConfig
-虽然 automated checks 能确保代码逻辑无误，但不同的操作系统（Windows vs macOS）和编辑器习惯（Tab vs Space）往往会导致许多看不见的‘脏’ diff（例如换行符差异）。为了让所有开发者在打开编辑器的那一刻就拥有完全一致的编码体验，我们需要配置 EditorConfig。”
+
+虽然 automated checks 能确保代码逻辑无误，但不同的操作系统（Windows vs macOS）和编辑器习惯（Tab vs Space）往往会导致许多看不见的"脏"diff（例如换行符差异）。为了让所有开发者在打开编辑器的那一刻就拥有完全一致的编码体验，我们需要配置 EditorConfig。
+
 EditorConfig帮助维护跨不同编辑器和IDE的代码风格一致性。创建`.editorconfig`文件：
 
 ```ini
@@ -625,7 +660,14 @@ indent_size = 2
 max_line_length = 80
 ```
 
+这个EditorConfig配置确保了：
+- 所有文件使用 UTF-8 编码
+- 文件末尾有一个换行符
+- 使用 Unix 风格的换行符（LF）
+- 使用 2 个空格缩进
+- 每行最多 80 个字符
 
+EditorConfig 是一种编辑器无关的标准，大多数现代 IDE（如 VSCode、WebStorm、IntelliJ IDEA）和编辑器插件都会自动读取并应用这些设置。
 
 ## 2.5 GitHub Actions CI/CD配置
 
@@ -747,10 +789,12 @@ on:
       - dev
   pull_request:
   workflow_dispatch:
+
 jobs:
   test:
+    name: test (${{ matrix.settings.name }})
     strategy:
-      fail-fast: false # 关键：避免单点失败导致整个矩阵立即终止，我们需要看到所有平台的测试结果
+      fail-fast: false
       matrix:
         settings:
           - name: linux
@@ -758,14 +802,15 @@ jobs:
             playwright: bunx playwright install --with-deps
             workdir: .
             command: |
-              git config --global user.email "XXXX"
-              git config --global user.name "opencode"
+              git config --global user.email "你的邮箱"
+              git config --global user.name "你的用户名"
               bun turbo test
           - name: windows
             host: windows-latest
             playwright: bunx playwright install
             workdir: packages/app
             command: bun test:e2e:local
+    runs-on: ${{ matrix.settings.host }}
 ```
 
 首先是 **触发机制**。我们定义了三种触发时机：
@@ -788,8 +833,10 @@ jobs:
       run:
         shell: bash
 ```
-通过将 runs-on 设置为 ${{ matrix.settings.host }}，GitHub Actions 会为矩阵中的每组配置创建一个独立的 Job，并在指定的操作系统（如 Linux 或 Windows）上运行相同的测试步骤。这样，Linux 和 Windows 的差异就直接由运行环境来处理，而不需要在代码中用 if-else 分支来手动区分。
-但这里更值得玩味的是 `defaults.run.shell: bash`。我们知道，Windows 的原生 Shell 是 PowerShell 或 CMD，而 Linux 是 Bash。如果任由默认行为发生，我们在编写后续的 steps 时，就需要区分这两者的差异。通过设置 `shell: bash`，强制 GitHub Actions 在 Windows 环境中也使用 Git Bash 来执行命令, 这使得我们可以放心地在 steps 中使用 rm -rf、export 等标准 Linux 命令，而无需为 Windows 编写繁琐的 PowerShell 替代方案。。
+通过将 runs-on 设置为 ${{ matrix.settings.host }}，GitHub Actions 会为矩阵中的每组配置创建一个独立的 Job，并在指定的操作系统（如 Linux 或 Windows）上运行相同的测试步骤。这样，Lin
+EOF Win
+
+这个测试配置采用了矩阵策略（matrix strategy），能够在多个平台上并行运行测试，确保代码在不同操作系统上的兼容性。ts.run.shell: bash`。我们知道，Windows 的原生 Shell 是 PowerShell 或 CMD，而 Linux 是 Bash。如果任由默认行为发生，我们在编写后续的 steps 时，就需要区分这两者的差异。通过设置 `shell: bash`，强制 GitHub Actions 在 Windows 环境中也使用 Git Bash 来执行命令, 这使得我们可以放心地在 steps 中使用 rm -rf、export 等标准 Linux 命令，而无需为 Windows 编写繁琐的 PowerShell 替代方案。。
 
 接下来我们配置steps：
 
@@ -854,7 +901,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 ```
 
-#### 2.5.5 配置类型检查工作流
+### 2.5.5 配置类型检查工作流
 我们在 `.github/workflows` 目录下创建一个名为 `typecheck.yml` 的配置文件。这个文件定义了 GitHub Actions 的类型检查工作流，其核心内容如下：
 
 ```bash
