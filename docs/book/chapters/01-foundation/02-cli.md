@@ -1,0 +1,2281 @@
+# 1.2 CLI 骨架：一条命令的完整旅程
+
+## 2.0 开篇：从用户的第一次体验说起
+
+想象你是 OpenCode 的新用户。你刚刚看到 GitHub 上的 README，按照说明执行了安装命令：
+
+```bash
+$ bun install -g opencode
+```
+
+终端滚动了一堆日志，最后显示"安装成功"。现在，你会做什么？
+
+大多数人会输入：
+
+```bash
+$ opencode --version
+opencode version 1.1.39
+```
+
+**就这么简单的一行输出，背后却隐藏着整个 CLI 系统的精妙设计。**
+
+在本章中，我们将像侦探一样追踪这条命令的完整旅程，从用户按下回车的那一刻，到屏幕上显示版本号，揭开每一个环节的技术细节。更重要的是，我们会理解**为什么**要这样设计，以及在构建自己的 CLI 工具时如何做出正确的决策。
+
+### 2.0.1 本章的学习路径
+
+我们将按照命令执行的真实流程，逐层深入：
+
+```
+用户输入 opencode --version
+    ↓
+操作系统如何找到 opencode？        → package.json 的 bin 字段
+    ↓
+bin/opencode 是什么？              → Shebang 和启动器模式
+    ↓
+如何处理不同平台？                 → 平台检测和二进制查找
+    ↓
+--version 参数如何解析？           → Yargs 框架
+    ↓
+如何支持 28 个命令？               → 命令系统架构
+```
+
+每一步都会回答三个问题：
+1. **What**: 发生了什么？
+2. **How**: 如何实现的？
+3. **Why**: 为什么这样设计？
+
+## 2.1 第一站：操作系统如何找到 opencode？
+
+### 2.1.1 追踪可执行文件的位置
+
+当你在终端输入 `opencode` 时，操作系统需要知道去哪里找这个程序。让我们用 `which` 命令追踪一下：
+
+```bash
+$ which opencode
+/usr/local/bin/opencode
+```
+
+**发现 1：** `opencode` 在 `/usr/local/bin/` 目录下。
+
+这个目录通常在系统的 `PATH` 环境变量中，所以操作系统能找到它。但这引出了第一个问题：
+
+**问题 1：这个文件是谁放在那里的？**
+
+让我们看看这个文件的详细信息：
+
+```bash
+$ ls -la /usr/local/bin/opencode
+lrwxr-xr-x  1 user  staff  45 Jan 10 10:00 /usr/local/bin/opencode -> ../lib/node_modules/opencode/bin/opencode
+```
+
+**发现 2：** 这不是一个真正的文件，而是一个**符号链接**（symbolic link）！
+
+它指向了 `../lib/node_modules/opencode/bin/opencode`。
+
+**问题 2：这个符号链接是谁创建的？**
+
+### 2.1.2 揭秘：package.json 的 bin 字段
+
+答案在 `package.json` 中。当你执行 `bun install -g opencode` 时，包管理器会读取这个配置：
+
+```json
+// packages/opencode/package.json
+{
+  "name": "opencode",
+  "bin": {
+    "opencode": "./bin/opencode"
+  }
+}
+```
+
+**`bin` 字段的作用：**
+
+这个配置告诉包管理器："当用户安装这个包时，请创建一个名为 `opencode` 的命令，指向 `./bin/opencode` 文件。"
+
+包管理器会自动：
+1. 将包安装到 `node_modules/opencode/`
+2. 在 `/usr/local/bin/` 创建符号链接
+3. 链接指向 `node_modules/opencode/bin/opencode`
+
+**这就是为什么你可以在任何目录下直接输入 `opencode`。**
+
+### 2.1.3 实验：验证这个机制
+
+让我们创建一个最简单的可执行包来验证这个机制：
+
+```bash
+# 创建测试目录
+mkdir my-cli-test
+cd my-cli-test
+
+# 创建 package.json
+cat > package.json << 'EOF'
+{
+  "name": "my-cli-test",
+  "bin": {
+    "hello": "./bin/hello"
+  }
+}
+EOF
+
+# 创建 bin 目录和可执行文件
+mkdir bin
+cat > bin/hello << 'EOF'
+#!/usr/bin/env node
+console.log("Hello from my CLI!")
+EOF
+
+# 赋予执行权限
+chmod +x bin/hello
+
+# 本地安装（创建符号链接）
+npm link
+
+# 测试
+hello
+# 输出: Hello from my CLI!
+```
+
+**现在你理解了第一个关键机制：`package.json` 的 `bin` 字段让普通文件变成了全局命令。**
+
+但这引出了下一个问题：`bin/hello` 文件的第一行 `#!/usr/bin/env node` 是什么意思？
+
+## 2.2 第二站：Shebang - 让文本文件变成可执行程序
+
+### 2.2.1 问题：bin/opencode 到底是什么？
+
+现在我们知道符号链接指向了 `bin/opencode`，让我们看看这个文件的内容：
+
+```bash
+$ cat node_modules/opencode/bin/opencode
+#!/usr/bin/env node
+
+const childProcess = require("child_process")
+const fs = require("fs")
+// ... 更多代码
+```
+
+**发现 3：** 第一行是 `#!/usr/bin/env node`
+
+这看起来很奇怪 - 这是一个 JavaScript 文件，但第一行却不是有效的 JavaScript 语法。那么它是如何工作的？
+
+### 2.2.2 Shebang：Unix 的魔法标记
+
+`#!/usr/bin/env node` 被称为 **Shebang**（也叫 Hashbang），它是 Unix/Linux 系统的一个特殊机制。
+
+**Shebang 的工作原理：**
+
+当操作系统执行一个文本文件时，会检查第一行是否以 `#!` 开头：
+- 如果是，就用 `#!` 后面指定的程序来执行这个文件
+- 如果不是，就尝试用默认的 shell 执行
+
+```
+用户执行: ./bin/opencode
+    ↓
+操作系统读取第一行: #!/usr/bin/env node
+    ↓
+操作系统执行: /usr/bin/env node ./bin/opencode
+    ↓
+env 在 PATH 中查找 node
+    ↓
+node 执行这个文件
+```
+
+**为什么叫 Shebang？**
+- `#` 读作 "sharp" 或 "hash"
+- `!` 读作 "bang"
+- 合起来就是 "shebang"
+
+### 2.2.3 为什么用 `/usr/bin/env node` 而不是 `/usr/local/bin/node`？
+
+这是一个关键的设计决策。让我们对比两种写法：
+
+**方案 A：硬编码路径**
+```bash
+#!/usr/local/bin/node
+```
+
+❌ **问题：**
+- 不同系统的 Node.js 安装路径不同
+- macOS 可能在 `/usr/local/bin/node`
+- Linux 可能在 `/usr/bin/node`
+- 用户可能用 nvm 安装在 `~/.nvm/versions/node/...`
+
+**方案 B：使用 env（OpenCode 的选择）**
+```bash
+#!/usr/bin/env node
+```
+
+✅ **优点：**
+- `env` 会在 `PATH` 环境变量中查找 `node`
+- 无论 Node.js 安装在哪里，只要在 PATH 中就能找到
+- 支持用户自定义的 Node.js 版本管理工具
+
+**这是一个"灵活性 vs 确定性"的权衡：**
+- 硬编码路径：确定性高，但灵活性差
+- 使用 env：灵活性高，但依赖 PATH 配置
+
+OpenCode 选择灵活性，因为 CLI 工具需要在各种环境中运行。
+
+### 2.2.4 实验：理解 Shebang 的作用
+
+让我们创建两个文件对比：
+
+**没有 Shebang 的文件：**
+```bash
+# 创建文件
+cat > no-shebang.js << 'EOF'
+console.log("Hello without shebang")
+EOF
+
+# 尝试直接执行
+chmod +x no-shebang.js
+./no-shebang.js
+# 错误: ./no-shebang.js: line 1: syntax error near unexpected token `"Hello without shebang"'
+```
+
+**有 Shebang 的文件：**
+```bash
+# 创建文件
+cat > with-shebang.js << 'EOF'
+#!/usr/bin/env node
+console.log("Hello with shebang")
+EOF
+
+# 直接执行
+chmod +x with-shebang.js
+./with-shebang.js
+# 输出: Hello with shebang
+```
+
+**关键洞察：Shebang 让文本文件变成了可执行程序。**
+
+### 2.2.5 Windows 的特殊情况
+
+你可能会问：Windows 不支持 Shebang，那怎么办？
+
+**答案：包管理器会自动处理。**
+
+当你在 Windows 上执行 `npm install -g opencode` 时，npm 会：
+1. 读取 `package.json` 的 `bin` 字段
+2. 创建 `opencode.cmd` 包装文件：
+   ```cmd
+   @ECHO off
+   SETLOCAL
+   CALL :find_dp0
+
+   IF EXIST "%dp0%\node.exe" (
+     SET "_prog=%dp0%\node.exe"
+   ) ELSE (
+     SET "_prog=node"
+   )
+
+   "%_prog%" "%dp0%\node_modules\opencode\bin\opencode" %*
+   ```
+3. 这个 `.cmd` 文件会自动调用 Node.js 执行真正的脚本
+
+**所以 OpenCode 的跨平台策略是：**
+- Unix/Linux/macOS：依赖 Shebang
+- Windows：依赖包管理器生成的 `.cmd` 包装文件
+
+**现在你理解了第二个关键机制：Shebang 让脚本文件可以像编译后的二进制程序一样直接执行。**
+
+但这引出了下一个问题：OpenCode 的 `bin/opencode` 不是直接执行业务逻辑，而是一个"启动器"，为什么需要这一层？
+
+## 2.3 第三站：启动器模式 - 为什么需要一个"中间人"？
+
+### 2.3.1 问题：为什么不直接执行 src/index.ts？
+
+你可能会想：既然有了 Shebang，为什么不直接这样写？
+
+```typescript
+#!/usr/bin/env bun
+// src/index.ts
+console.log("OpenCode version 1.0.0")
+```
+
+然后在 `package.json` 中：
+```json
+{
+  "bin": {
+    "opencode": "./src/index.ts"
+  }
+}
+```
+
+**这个方案的问题：**
+
+1. **平台差异：**
+   - macOS Apple Silicon 需要 `opencode-darwin-arm64` 二进制文件
+   - Linux x64 需要 `opencode-linux-x64` 二进制文件
+   - Windows 需要 `opencode-windows-x64.exe`
+   - 如何在运行时选择正确的二进制文件？
+
+2. **性能考虑：**
+   - TypeScript 需要即时编译，启动慢
+   - 预编译的二进制文件启动快（Bun 的优势）
+   - 但不同平台需要不同的二进制文件
+
+3. **灵活性需求：**
+   - 开发时可能想用本地构建的版本
+   - 测试时可能想用特定版本
+   - 如何支持环境变量覆盖？
+
+**OpenCode 的解决方案：启动器模式（Launcher Pattern）**
+
+```
+bin/opencode (启动器)
+    ↓
+检测平台和架构
+    ↓
+查找对应的二进制文件
+    ↓
+执行真正的 opencode 程序
+```
+
+### 2.3.2 启动器的完整实现
+
+让我们逐段分析 `bin/opencode` 的代码：
+
+```javascript
+#!/usr/bin/env node
+
+const childProcess = require("child_process")
+const fs = require("fs")
+const path = require("path")
+const os = require("os")
+```
+
+**为什么用 CommonJS 而不是 ESM？**
+- 这个文件需要在各种 Node.js 版本上运行（包括旧版本）
+- CommonJS 兼容性最好，不需要 `package.json` 配置
+- 作为启动器，它的职责很简单，不需要复杂的模块系统
+
+**核心函数：执行目标程序**
+
+```javascript
+function run(target) {
+  const result = childProcess.spawnSync(target, process.argv.slice(2), {
+    stdio: "inherit",
+  })
+  if (result.error) {
+    console.error(result.error.message)
+    process.exit(1)
+  }
+  const code = typeof result.status === "number" ? result.status : 0
+  process.exit(code)
+}
+```
+
+**关键设计点：**
+
+1. **`spawnSync` vs `spawn`：**
+   - `spawnSync`：同步执行，阻塞直到子进程结束
+   - `spawn`：异步执行，立即返回
+   - CLI 工具需要阻塞式执行，所以用 `spawnSync`
+
+2. **`process.argv.slice(2)`：**
+   - `process.argv[0]`：node 可执行文件路径
+   - `process.argv[1]`：当前脚本路径（bin/opencode）
+   - `process.argv.slice(2)`：用户传入的参数
+   - 例如：`opencode --version` → `["--version"]`
+
+3. **`stdio: "inherit"`：**
+   - 子进程继承父进程的标准输入/输出/错误流
+   - 用户看到的输出就像直接执行二进制文件一样
+   - 不需要手动转发输出
+
+4. **退出码传递：**
+   - 正确传递子进程的退出码
+   - 这对 CI/CD 脚本很重要（非零退出码表示失败）
+
+### 2.3.3 优先级 1：环境变量覆盖
+
+```javascript
+const envPath = process.env.OPENCODE_BIN_PATH
+if (envPath) {
+  run(envPath)
+}
+```
+
+**设计洞察：环境变量是最高优先级**
+
+这允许：
+- 开发者测试本地构建：`OPENCODE_BIN_PATH=./dist/opencode opencode --version`
+- CI/CD 使用特定版本：`OPENCODE_BIN_PATH=/custom/path/opencode`
+- 企业环境的特殊部署需求
+
+**这是 Unix 哲学的体现：环境变量是配置的最高优先级。**
+
+### 2.3.4 平台检测：找到正确的二进制文件
+
+```javascript
+const platformMap = {
+  darwin: "darwin",
+  linux: "linux",
+  win32: "windows",
+}
+const archMap = {
+  x64: "x64",
+  arm64: "arm64",
+  arm: "arm",
+}
+
+let platform = platformMap[os.platform()]
+if (!platform) {
+  platform = os.platform()  // 回退到原始值
+}
+let arch = archMap[os.arch()]
+if (!arch) {
+  arch = os.arch()  // 回退到原始值
+}
+
+const base = "opencode-" + platform + "-" + arch
+const binary = platform === "windows" ? "opencode.exe" : "opencode"
+```
+
+**平台检测的设计考量：**
+
+1. **映射表 vs 直接使用：**
+   - Node.js 返回 `darwin`，但包名可能用 `macos`
+   - 映射表提供了一层抽象，便于调整命名约定
+   - 回退机制确保未知平台也能尝试运行
+
+2. **二进制文件命名约定：**
+   ```
+   opencode-darwin-arm64      # macOS Apple Silicon
+   opencode-darwin-x64        # macOS Intel
+   opencode-linux-x64         # Linux x86_64
+   opencode-linux-arm64       # Linux ARM64
+   opencode-windows-x64.exe   # Windows x64
+   ```
+
+3. **为什么这样命名？**
+   - 允许在 `node_modules` 中同时存在多个平台的二进制文件
+   - npm/bun 可以根据平台只下载对应的包（可选依赖）
+   - 便于 CI/CD 构建和分发
+
+### 2.3.5 向上递归查找：解决 Monorepo 问题
+
+```javascript
+function findBinary(startDir) {
+  let current = startDir
+  for (;;) {
+    const modules = path.join(current, "node_modules")
+    if (fs.existsSync(modules)) {
+      const entries = fs.readdirSync(modules)
+      for (const entry of entries) {
+        if (!entry.startsWith(base)) {
+          continue
+        }
+        const candidate = path.join(modules, entry, "bin", binary)
+        if (fs.existsSync(candidate)) {
+          return candidate
+        }
+      }
+    }
+    const parent = path.dirname(current)
+    if (parent === current) {
+      return  // 到达文件系统根目录
+    }
+    current = parent
+  }
+}
+```
+
+**为什么需要向上查找？**
+
+考虑 Monorepo 场景：
+
+```
+/project
+├── node_modules
+│   ├── opencode
+│   │   └── bin/opencode (启动器)
+│   └── opencode-darwin-arm64
+│       └── bin/opencode (真正的二进制文件)
+└── packages
+    └── my-app
+        └── node_modules (可能为空)
+```
+
+当用户在 `/project/packages/my-app` 目录下执行 `opencode` 时：
+- 启动器位于 `/project/node_modules/opencode/bin/opencode`
+- 但二进制文件在 `/project/node_modules/opencode-darwin-arm64/bin/opencode`
+- 向上查找确保能找到正确的二进制文件
+
+**算法分析：**
+1. 从当前目录开始
+2. 检查 `node_modules` 是否存在
+3. 遍历所有以 `opencode-{platform}-{arch}` 开头的包
+4. 检查 `bin/opencode` 或 `bin/opencode.exe` 是否存在
+5. 如果找不到，向上一级目录继续查找
+6. 直到找到或到达文件系统根目录
+
+**时间复杂度：** O(d × n)，其中 d 是目录深度，n 是 node_modules 中的包数量
+
+### 2.3.6 错误处理：用户友好的提示
+
+```javascript
+const resolved = findBinary(scriptDir)
+if (!resolved) {
+  console.error(
+    'It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing the "' +
+      base +
+      '" package',
+  )
+  process.exit(1)
+}
+
+run(resolved)
+```
+
+**错误信息设计的三个原则：**
+
+1. **说明问题：** "package manager failed to install"
+2. **给出原因：** "for your platform"
+3. **提供解决方案：** "manually installing the ... package"
+
+**对比糟糕的错误信息：**
+```javascript
+// ❌ 糟糕的错误信息
+console.error("Binary not found")
+
+// ✅ 好的错误信息（OpenCode 的做法）
+console.error(
+  'It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing the "opencode-darwin-arm64" package'
+)
+```
+
+### 2.3.7 完整流程图
+
+现在我们可以画出 `opencode --version` 的完整执行流程：
+
+```
+用户输入: opencode --version
+    ↓
+操作系统在 PATH 中查找 opencode
+    ↓
+找到: /usr/local/bin/opencode (符号链接)
+    ↓
+指向: node_modules/opencode/bin/opencode
+    ↓
+Node.js 执行启动器脚本
+    ↓
+检查 OPENCODE_BIN_PATH 环境变量? 
+    ├─ 是 → 直接执行指定路径
+    └─ 否 → 继续
+        ↓
+    检测平台和架构 (darwin + arm64)
+        ↓
+    构造包名: opencode-darwin-arm64
+        ↓
+    向上查找 node_modules
+        ↓
+    找到二进制文件: node_modules/opencode-darwin-arm64/bin/opencode
+        ↓
+    使用 spawnSync 执行
+        ↓
+    传递参数: ["--version"]
+        ↓
+    继承 stdio (用户看到输出)
+        ↓
+    等待执行完成
+        ↓
+    传递退出码
+        ↓
+    用户看到: opencode version 1.1.39
+```
+
+**现在你理解了第三个关键机制：启动器模式通过一个轻量级的 Node.js 脚本，实现了跨平台的二进制文件分发和执行。**
+
+但这引出了下一个问题：二进制文件接收到 `--version` 参数后，如何解析和处理？
+
+
+## 2.4 第四站：参数解析 - 从手动到 Yargs
+
+### 2.4.1 问题：二进制文件如何处理 --version？
+
+现在我们的命令已经能够执行到真正的 OpenCode 二进制文件了。但二进制文件内部是如何处理 `--version` 参数的？
+
+让我们从最简单的方式开始，逐步演进到 OpenCode 的实际实现。
+
+**方案 1：手动解析 process.argv**
+
+```typescript
+// src/index.ts - 第一版（不推荐）
+const args = process.argv.slice(2)
+
+if (args[0] === "--version") {
+  console.log("opencode version 1.0.0")
+  process.exit(0)
+}
+
+if (args[0] === "--help") {
+  console.log("Usage: opencode [options]")
+  console.log("Options:")
+  console.log("  --version  Show version")
+  console.log("  --help     Show help")
+  process.exit(0)
+}
+
+console.log("Hello, OpenCode!")
+```
+
+**这个方案的问题：**
+- ❌ 无法处理 `-v` 短选项
+- ❌ 无法处理 `--log-level=DEBUG` 这样的键值对
+- ❌ 无法处理多个选项的组合
+- ❌ 代码很快变得难以维护
+- ❌ 没有类型安全
+
+**当你需要支持 28 个命令时，这种方式完全不可行。**
+
+### 2.4.2 技术选型：为什么选择 Yargs？
+
+在 Node.js 生态中，有多个命令行解析库可选：
+
+| 方案 | 优点 | 缺点 | 适用场景 |
+|------|------|------|----------|
+| **手动解析** | 零依赖、完全控制 | 代码量大、易出错 | 简单脚本 |
+| **minimist** | 轻量(~5KB) | 功能有限、无类型 | 简单 CLI |
+| **commander.js** | 简洁 API、流行 | 不支持中间件 | 中等复杂度 |
+| **Yargs** | 功能完整、中间件、自动帮助 | 体积较大(~200KB) | 复杂 CLI |
+| **oclif** | 企业级、插件系统 | 过于复杂、学习曲线陡 | 大型 CLI 框架 |
+
+**OpenCode 选择 Yargs 的原因：**
+- ✅ 支持子命令（28 个命令需要良好的组织）
+- ✅ 中间件机制（统一的日志初始化）
+- ✅ 自动生成帮助信息
+- ✅ TypeScript 类型支持
+- ✅ 成熟稳定，社区活跃
+
+**这是一个"体积 vs 功能"的权衡：**
+- 对于简单工具，200KB 可能太重
+- 对于复杂 CLI（28 个命令），这个代价是值得的
+
+### 2.4.3 Yargs 基础：从 Hello World 开始
+
+让我们从最简单的例子开始理解 Yargs：
+
+```typescript
+// src/index.ts - 使用 Yargs
+import yargs from "yargs"
+import { hideBin } from "yargs/helpers"
+
+const cli = yargs(hideBin(process.argv))
+  .scriptName("opencode")
+  .version("1.0.0")
+  .help()
+
+cli.parse()
+```
+
+**关键概念解析：**
+
+1. **`hideBin(process.argv)`：**
+   ```typescript
+   // process.argv 的内容：
+   // ['/path/to/node', '/path/to/script', '--version']
+   
+   // hideBin 移除前两个元素：
+   // ['--version']
+   ```
+   这是 Yargs 的标准用法，只保留用户参数。
+
+2. **链式调用（Builder Pattern）：**
+   ```typescript
+   yargs(...)
+     .scriptName("opencode")  // 返回 yargs 实例
+     .version("1.0.0")        // 返回 yargs 实例
+     .help()                  // 返回 yargs 实例
+   ```
+   每个方法返回 `this`，支持链式调用。
+
+3. **自动功能：**
+   - `.version()` 自动处理 `--version` 和 `-v`
+   - `.help()` 自动处理 `--help` 和 `-h`
+   - 自动生成格式化的帮助信息
+
+**测试一下：**
+
+```bash
+$ bun run src/index.ts --version
+1.0.0
+
+$ bun run src/index.ts --help
+opencode
+
+Options:
+  --version  Show version number  [boolean]
+  --help     Show help            [boolean]
+```
+
+**Yargs 自动为我们做了什么？**
+- ✅ 解析 `--version` 和 `--help`
+- ✅ 生成格式化的帮助信息
+- ✅ 处理短选项别名（`-v`, `-h`）
+- ✅ 验证参数类型
+
+
+```javascript
+// 平台和架构映射
+const platformMap = {
+  darwin: "darwin",
+  linux: "linux",
+  win32: "windows",
+}
+const archMap = {
+  x64: "x64",
+  arm64: "arm64",
+  arm: "arm",
+}
+
+let platform = platformMap[os.platform()]
+if (!platform) {
+  platform = os.platform()  // 回退到原始值
+}
+let arch = archMap[os.arch()]
+if (!arch) {
+  arch = os.arch()  // 回退到原始值
+}
+```
+
+**平台检测的设计考量:**
+- Node.js 的 `os.platform()` 返回 `darwin`、`linux`、`win32` 等
+- 我们需要将其映射到二进制文件的命名约定
+- 回退机制确保在未知平台上也能尝试运行
+
+```javascript
+const base = "opencode-" + platform + "-" + arch
+const binary = platform === "windows" ? "opencode.exe" : "opencode"
+```
+
+**二进制文件命名约定:**
+- `opencode-darwin-arm64` (macOS Apple Silicon)
+- `opencode-linux-x64` (Linux x86_64)
+- `opencode-windows-x64` (Windows x64)
+
+这种命名方式允许在 `node_modules` 中同时存在多个平台的二进制文件。
+
+
+```javascript
+function findBinary(startDir) {
+  let current = startDir
+  for (;;) {
+    const modules = path.join(current, "node_modules")
+    if (fs.existsSync(modules)) {
+      const entries = fs.readdirSync(modules)
+      for (const entry of entries) {
+        if (!entry.startsWith(base)) {
+          continue
+        }
+        const candidate = path.join(modules, entry, "bin", binary)
+        if (fs.existsSync(candidate)) {
+          return candidate
+        }
+      }
+    }
+    const parent = path.dirname(current)
+    if (parent === current) {
+      return  // 到达文件系统根目录
+    }
+    current = parent
+  }
+}
+```
+
+**二进制文件查找算法:**
+
+这个函数实现了一个**向上递归查找**的策略:
+
+1. 从当前目录开始
+2. 检查 `node_modules` 是否存在
+3. 遍历所有以 `opencode-{platform}-{arch}` 开头的包
+4. 检查 `bin/opencode` 或 `bin/opencode.exe` 是否存在
+5. 如果找不到,向上一级目录继续查找
+6. 直到找到或到达文件系统根目录
+
+**为什么需要向上查找?**
+
+考虑以下场景:
+
+```
+/project
+├── node_modules
+│   ├── opencode
+│   │   └── bin/opencode (启动器)
+│   └── opencode-darwin-arm64
+│       └── bin/opencode (真正的二进制文件)
+└── packages
+    └── my-app
+        └── node_modules (可能为空)
+```
+
+当用户在 `/project/packages/my-app` 目录下执行 `opencode` 时:
+- 启动器位于 `/project/node_modules/opencode/bin/opencode`
+- 但二进制文件在 `/project/node_modules/opencode-darwin-arm64/bin/opencode`
+- 向上查找确保能找到正确的二进制文件
+
+
+```javascript
+const resolved = findBinary(scriptDir)
+if (!resolved) {
+  console.error(
+    'It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing the "' +
+      base +
+      '" package',
+  )
+  process.exit(1)
+}
+
+run(resolved)
+```
+
+**错误处理的用户体验设计:**
+- 提供清晰的错误信息,告诉用户问题所在
+- 给出具体的解决方案(手动安装对应平台的包)
+- 包含平台信息(`base` 变量),方便用户复制粘贴
+
+### 2.2.3 完整流程图
+
+```
+用户执行: opencode --version
+    ↓
+操作系统查找 PATH 中的 opencode
+    ↓
+找到: /usr/local/bin/opencode (符号链接)
+    ↓
+指向: node_modules/opencode/bin/opencode
+    ↓
+Node.js 执行启动器脚本
+    ↓
+检查 OPENCODE_BIN_PATH 环境变量? 
+    ├─ 是 → 直接执行指定路径
+    └─ 否 → 继续
+        ↓
+    检测平台和架构
+        ↓
+    构造包名: opencode-darwin-arm64
+        ↓
+    向上查找 node_modules
+        ↓
+    找到二进制文件: node_modules/opencode-darwin-arm64/bin/opencode
+        ↓
+    使用 spawnSync 执行
+        ↓
+    传递参数: ["--version"]
+        ↓
+    继承 stdio
+        ↓
+    等待执行完成
+        ↓
+    传递退出码
+```
+
+
+### 2.2.4 练习:验证启动器
+
+创建一个测试脚本来验证启动器的行为:
+
+```bash
+# 1. 测试环境变量覆盖
+OPENCODE_BIN_PATH=/bin/echo opencode "Hello from env override"
+
+# 2. 测试参数传递
+opencode --help
+
+# 3. 测试退出码
+opencode some-invalid-command
+echo $?  # 应该输出非零值
+```
+
+## 2.3 从简单到复杂:命令行参数解析的演进
+
+现在我们有了可执行的入口,下一个问题是:**如何优雅地处理命令行参数?**
+
+### 2.3.1 方案 1:手动解析 process.argv
+
+最直接的方式是手动解析 `process.argv`:
+
+```typescript
+// src/index.ts - 第一版
+const args = process.argv.slice(2)
+
+if (args[0] === "--version") {
+  console.log("opencode version 1.0.0")
+  process.exit(0)
+}
+
+if (args[0] === "--help") {
+  console.log("Usage: opencode [options]")
+  console.log("Options:")
+  console.log("  --version  Show version")
+  console.log("  --help     Show help")
+  process.exit(0)
+}
+
+console.log("Hello, OpenCode!")
+```
+
+**问题暴露:**
+- ❌ 代码很快变得难以维护
+- ❌ 没有类型安全
+- ❌ 无法处理复杂的参数组合(如 `--log-level=DEBUG`)
+- ❌ 错误处理繁琐
+
+
+### 2.3.2 方案 2:使用 Yargs 框架
+
+当我们需要支持 28 个命令时,手动解析显然不可行。这就是为什么 OpenCode 选择了 **Yargs**。
+
+**为什么选择 Yargs 而不是其他方案?**
+
+| 方案 | 优点 | 缺点 | 适用场景 |
+|------|------|------|----------|
+| **手动解析** | 零依赖、完全控制 | 代码量大、易出错 | 简单脚本 |
+| **minimist** | 轻量(~5KB) | 功能有限、无类型 | 简单 CLI |
+| **commander.js** | 简洁 API、流行 | 不支持中间件 | 中等复杂度 |
+| **Yargs** | 功能完整、中间件、自动帮助 | 体积较大(~200KB) | 复杂 CLI |
+| **oclif** | 企业级、插件系统 | 过于复杂、学习曲线陡 | 大型 CLI 框架 |
+
+OpenCode 选择 Yargs 的原因:
+- ✅ 支持子命令(28 个命令需要良好的组织)
+- ✅ 中间件机制(统一的日志初始化)
+- ✅ 自动生成帮助信息
+- ✅ TypeScript 类型支持
+- ✅ 成熟稳定,社区活跃
+
+### 2.3.3 Yargs 基础:从 Hello World 开始
+
+让我们从最简单的例子开始:
+
+```typescript
+// src/index.ts - 使用 Yargs
+import yargs from "yargs"
+import { hideBin } from "yargs/helpers"
+
+const cli = yargs(hideBin(process.argv))
+  .scriptName("opencode")
+  .version("1.0.0")
+  .help()
+
+cli.parse()
+```
+
+**关键概念解析:**
+
+1. **`hideBin(process.argv)`**:
+   - `process.argv` 包含 `[node路径, 脚本路径, ...用户参数]`
+   - `hideBin` 移除前两个元素,只保留用户参数
+   - 这是 Yargs 的标准用法
+
+2. **`scriptName("opencode")`**:
+   - 设置帮助信息中显示的命令名称
+   - 影响自动生成的使用说明
+
+3. **链式调用**:
+   - Yargs 使用 Builder 模式
+   - 每个方法返回 `this`,支持链式调用
+
+
+现在运行:
+
+```bash
+bun run src/index.ts --version
+# 输出: 1.0.0
+
+bun run src/index.ts --help
+# 输出:
+# opencode
+#
+# Options:
+#   --version  Show version number  [boolean]
+#   --help     Show help            [boolean]
+```
+
+**Yargs 自动为我们做了什么?**
+- ✅ 解析 `--version` 和 `--help`
+- ✅ 生成格式化的帮助信息
+- ✅ 处理短选项别名(`-v`, `-h`)
+- ✅ 验证参数类型
+
+### 2.3.4 添加全局选项
+
+OpenCode 需要两个全局选项:日志控制。
+
+```typescript
+const cli = yargs(hideBin(process.argv))
+  .scriptName("opencode")
+  .version("1.0.0")
+  .help()
+  .option("print-logs", {
+    describe: "print logs to stderr",
+    type: "boolean",
+  })
+  .option("log-level", {
+    describe: "log level",
+    type: "string",
+    choices: ["DEBUG", "INFO", "WARN", "ERROR"],
+  })
+
+cli.parse()
+```
+
+**选项定义的关键字段:**
+- `describe`:帮助信息中的描述
+- `type`:参数类型(`boolean`、`string`、`number`、`array`)
+- `choices`:限制可选值(自动验证)
+
+测试:
+
+```bash
+bun run src/index.ts --log-level=DEBUG
+# Yargs 会验证值是否在 choices 中
+
+bun run src/index.ts --log-level=INVALID
+# 错误: Invalid values:
+#   Argument: log-level, Given: "INVALID", Choices: "DEBUG", "INFO", "WARN", "ERROR"
+```
+
+
+## 2.5 第五站：命令系统 - 从一个到二十八个
+
+### 2.5.1 问题：如何组织大量命令？
+
+OpenCode 有 28 个命令：
+- `opencode tui` - 启动 TUI 界面
+- `opencode session new` - 创建会话
+- `opencode models` - 列出模型
+- `opencode mcp list` - 列出 MCP 服务器
+- ...
+
+如果把所有逻辑写在一个文件中，会导致：
+- ❌ 文件过大（数千行）
+- ❌ 难以维护
+- ❌ 团队协作困难
+- ❌ 无法独立测试
+
+### 2.5.2 解决方案：命令模块化
+
+Yargs 支持通过 `.command()` 注册子命令：
+
+```typescript
+// src/index.ts
+import { ModelsCommand } from "./cli/cmd/models"
+import { SessionCommand } from "./cli/cmd/session"
+import { McpCommand } from "./cli/cmd/mcp"
+
+const cli = yargs(hideBin(process.argv))
+  .middleware(/* ... */)
+  .command(ModelsCommand)
+  .command(SessionCommand)
+  .command(McpCommand)
+  // ... 25 个其他命令
+
+cli.parse()
+```
+
+每个命令是一个独立的模块，遵循统一的接口。
+
+### 2.5.3 命令定义的四个关键部分
+
+让我们通过 `ModelsCommand` 来理解命令的结构：
+
+```typescript
+// src/cli/cmd/models.ts
+export const ModelsCommand = {
+  command: "models [provider]",
+  describe: "list all available models",
+  builder: (yargs) => {
+    return yargs
+      .positional("provider", {
+        describe: "provider ID to filter models by",
+        type: "string",
+      })
+      .option("verbose", {
+        describe: "use more verbose model output",
+        type: "boolean",
+      })
+  },
+  handler: async (args) => {
+    // 命令实现
+  },
+}
+```
+
+#### 1. command：命令签名
+
+```typescript
+command: "models [provider]"
+```
+
+**语法规则：**
+- `models`：命令名称（必需）
+- `[provider]`：可选位置参数（用方括号包裹）
+- `<required>`：必需位置参数（用尖括号包裹）
+
+**示例：**
+```bash
+opencode models              # provider = undefined
+opencode models openai       # provider = "openai"
+```
+
+#### 2. describe：命令描述
+
+```typescript
+describe: "list all available models"
+```
+
+这个描述会出现在：
+- `opencode --help` 的命令列表中
+- `opencode models --help` 的顶部
+
+#### 3. builder：参数定义
+
+```typescript
+builder: (yargs) => {
+  return yargs
+    .positional("provider", {
+      describe: "provider ID to filter models by",
+      type: "string",
+    })
+    .option("verbose", {
+      describe: "use more verbose model output",
+      type: "boolean",
+    })
+}
+```
+
+**Builder 函数的职责：**
+- 定义位置参数（`.positional()`）
+- 定义选项参数（`.option()`）
+- 设置参数验证规则
+- 返回配置后的 yargs 实例
+
+**位置参数 vs 选项参数：**
+```bash
+opencode models openai --verbose
+#               ^^^^^^  ^^^^^^^^
+#               位置参数  选项参数
+```
+
+#### 4. handler：命令实现
+
+```typescript
+handler: async (args) => {
+  // args.provider: string | undefined
+  // args.verbose: boolean | undefined
+  
+  await Instance.provide({
+    directory: process.cwd(),
+    async fn() {
+      const providers = await Provider.list()
+      
+      if (args.provider) {
+        const provider = providers[args.provider]
+        if (!provider) {
+          UI.error(`Provider not found: ${args.provider}`)
+          return
+        }
+        printModels(args.provider, args.verbose)
+        return
+      }
+      
+      // 列出所有提供商的模型
+      for (const providerID of Object.keys(providers)) {
+        printModels(providerID, args.verbose)
+      }
+    },
+  })
+}
+```
+
+**Handler 函数的关键点：**
+
+1. **类型安全的参数访问：**
+   - `args.provider` 自动推断为 `string | undefined`
+   - `args.verbose` 自动推断为 `boolean | undefined`
+   - TypeScript 会在编译时检查类型错误
+
+2. **实例隔离（Instance.provide）：**
+   ```typescript
+   await Instance.provide({
+     directory: process.cwd(),
+     async fn() { /* ... */ }
+   })
+   ```
+   
+   这是 OpenCode 的核心模式：
+   - 每个命令在独立的实例上下文中执行
+   - `directory` 指定项目目录
+   - 实例销毁时自动清理资源
+   - 避免不同项目的状态污染
+
+3. **错误处理：**
+   ```typescript
+   if (!provider) {
+     UI.error(`Provider not found: ${args.provider}`)
+     return  // 提前返回，不继续执行
+   }
+   ```
+   
+   使用 `UI.error()` 而不是 `console.error()`：
+   - 统一的错误输出格式
+   - 支持颜色和样式
+   - 可以被测试框架捕获
+
+### 2.5.4 命令辅助函数：cmd()
+
+你可能注意到，OpenCode 的实际代码使用了 `cmd()` 包装器：
+
+```typescript
+export const ModelsCommand = cmd({
+  command: "models [provider]",
+  describe: "list all available models",
+  builder: (yargs) => { /* ... */ },
+  handler: async (args) => { /* ... */ },
+})
+```
+
+让我们看看 `cmd()` 的实现：
+
+```typescript
+// src/cli/cmd/cmd.ts
+export function cmd<T>(definition: CommandModule<{}, T>): CommandModule<{}, T> {
+  return {
+    ...definition,
+    handler: async (args) => {
+      try {
+        await definition.handler(args)
+      } catch (error) {
+        if (error instanceof NamedError) {
+          UI.error(error.message)
+          process.exit(1)
+        }
+        throw error
+      }
+    },
+  }
+}
+```
+
+**`cmd()` 的作用：**
+
+1. **统一的错误处理：**
+   - 捕获 `NamedError`（业务错误）
+   - 使用 `UI.error()` 显示友好的错误信息
+   - 退出码设置为 1
+
+2. **保持类型安全：**
+   - 泛型 `<T>` 保留原始参数类型
+   - TypeScript 可以正确推断 `args` 的类型
+
+3. **未捕获的错误会继续抛出：**
+   - 系统错误（如内存溢出）不会被吞掉
+   - 保留完整的堆栈跟踪
+
+**为什么需要 `NamedError`？**
+
+```typescript
+// 业务错误：用户友好的错误信息
+throw new NamedError("Provider not found: openai")
+// 输出: ✖ Provider not found: openai
+
+// 系统错误：保留堆栈跟踪
+throw new Error("Unexpected null pointer")
+// 输出: 完整的堆栈跟踪
+```
+
+这种区分让用户看到的错误信息更友好，同时保留了调试能力。
+
+
+### 2.5.5 嵌套命令：session 子命令
+
+OpenCode 有一些命令包含子命令，如 `session`：
+
+```bash
+opencode session new          # 创建会话
+opencode session list         # 列出会话
+opencode session prompt       # 发送消息
+```
+
+实现嵌套命令：
+
+```typescript
+// src/cli/cmd/session.ts
+export const SessionCommand = cmd({
+  command: "session",
+  describe: "manage sessions",
+  builder: (yargs) => {
+    return yargs
+      .command(SessionNewCommand)
+      .command(SessionListCommand)
+      .command(SessionPromptCommand)
+      .demandCommand(1, "You must specify a subcommand")
+  },
+  handler: () => {
+    // 父命令不需要实现，只用于组织子命令
+  },
+})
+
+export const SessionNewCommand = cmd({
+  command: "new",
+  describe: "create a new session",
+  builder: (yargs) => {
+    return yargs.option("agent", {
+      describe: "agent to use",
+      type: "string",
+    })
+  },
+  handler: async (args) => {
+    // 实现创建会话的逻辑
+  },
+})
+```
+
+**关键点：**
+
+1. **`.demandCommand(1, ...)`：**
+   - 要求至少指定一个子命令
+   - 如果用户只输入 `opencode session`，会显示错误
+
+2. **父命令的 handler 可以为空：**
+   - 父命令只用于组织子命令
+   - 实际逻辑在子命令中实现
+
+3. **子命令继承父命令的选项：**
+   ```bash
+   opencode session new --log-level=DEBUG
+   #                    ^^^^^^^^^^^^^^^^
+   #                    全局选项在所有命令中可用
+   ```
+
+## 2.6 完整的执行流程回顾
+
+现在让我们回到最初的问题：当用户输入 `opencode --version` 时，到底发生了什么？
+
+```
+用户输入: opencode --version
+    ↓
+【第一站：操作系统查找】
+操作系统在 PATH 中查找 opencode
+找到符号链接: /usr/local/bin/opencode
+指向: node_modules/opencode/bin/opencode
+    ↓
+【第二站：Shebang 解释】
+读取第一行: #!/usr/bin/env node
+env 在 PATH 中查找 node
+node 执行启动器脚本
+    ↓
+【第三站：启动器处理】
+检查 OPENCODE_BIN_PATH 环境变量（无）
+检测平台: darwin, 架构: arm64
+构造包名: opencode-darwin-arm64
+向上查找 node_modules
+找到二进制文件: node_modules/opencode-darwin-arm64/bin/opencode
+使用 spawnSync 执行，传递参数: ["--version"]
+    ↓
+【第四站：Yargs 解析】
+hideBin 移除 node 和脚本路径
+Yargs 解析参数: { version: true }
+执行中间件: 初始化日志系统
+匹配到 .version() 处理器
+    ↓
+【第五站：输出结果】
+打印版本号: opencode version 1.1.39
+退出码: 0
+    ↓
+用户看到输出
+```
+
+**这个看似简单的命令，背后经历了五个关键环节，每个环节都体现了精心的设计。**
+
+## 2.7 设计洞察与最佳实践
+
+通过追踪 `opencode --version` 的完整旅程，我们学到了什么？
+
+### 2.7.1 分层架构的价值
+
+```
+启动器层 (bin/opencode)
+    ↓ 职责：平台检测、二进制查找
+中间件层 (middleware)
+    ↓ 职责：初始化、日志、环境变量
+命令层 (commands)
+    ↓ 职责：业务逻辑
+核心层 (core)
+    ↓ 职责：实例管理、配置、工具
+```
+
+**每一层都有明确的职责边界，这使得：**
+- ✅ 代码易于理解和维护
+- ✅ 可以独立测试每一层
+- ✅ 便于团队协作（不同人负责不同层）
+
+### 2.7.2 权衡与决策
+
+| 决策点 | 选项 A | 选项 B | OpenCode 的选择 | 原因 |
+|--------|--------|--------|----------------|------|
+| **Shebang 路径** | 硬编码 `/usr/local/bin/node` | 使用 `/usr/bin/env node` | B | 灵活性 > 确定性 |
+| **参数解析** | 手动解析 | Yargs 框架 | B | 功能 > 体积 |
+| **命令组织** | 单文件 | 模块化 | B | 可维护性 > 简单性 |
+| **错误处理** | 统一捕获 | 分类处理 | B | 用户体验 > 实现简单 |
+
+**每个决策都是在特定约束下的最优解。**
+
+### 2.7.3 CLI 设计的黄金法则
+
+1. **遵循 POSIX 约定：**
+   - 短选项用单破折号：`-v`
+   - 长选项用双破折号：`--version`
+   - 参数用等号或空格：`--log-level=DEBUG` 或 `--log-level DEBUG`
+
+2. **提供有用的帮助信息：**
+   - 每个命令都应该有 `--help`
+   - 描述应该简洁明了
+   - 提供使用示例
+
+3. **合理的默认值：**
+   - 最常用的选项应该是默认值
+   - 用户不应该为常见用例指定大量参数
+
+4. **一致的命名：**
+   - 动词-名词结构：`session new`、`mcp list`
+   - 避免缩写（除非是行业标准）
+
+5. **友好的错误信息：**
+   - 说明问题是什么
+   - 给出可能的原因
+   - 提供解决方案
+
+## 2.8 本章小结
+
+在本章中，我们从用户输入 `opencode --version` 开始，追踪了命令执行的完整旅程，揭开了 CLI 系统的五个关键环节：
+
+1. **package.json 的 bin 字段**：让普通文件变成全局命令
+2. **Shebang 机制**：让文本文件可以像二进制程序一样执行
+3. **启动器模式**：实现跨平台的二进制文件分发
+4. **Yargs 框架**：提供强大的参数解析和中间件能力
+5. **命令系统**：模块化组织 28 个命令
+
+**关键收获：**
+- ✅ CLI 不是简单的脚本，而是精心设计的系统
+- ✅ 每个环节都有明确的职责和设计考量
+- ✅ 好的 CLI 工具应该是跨平台、易用、可维护的
+- ✅ 架构设计需要在多个维度上做权衡
+
+**下一章预告：**
+
+现在我们有了 CLI 骨架，但它还不能做任何有用的事情。在第三章中，我们将深入配置系统，学习如何使用 Zod 实现类型安全的配置验证，以及如何通过 Markdown 文件提供用户友好的配置方式。
+
+我们将回答这些问题：
+- 如何让用户配置 AI 模型和提供商？
+- 如何实现配置的优先级和合并？
+- 如何在运行时验证配置的正确性？
+- 如何支持多项目的配置隔离？
+
+**实践建议：**
+
+在继续下一章之前，建议你：
+1. 克隆 OpenCode 仓库，运行 `opencode --version`
+2. 阅读 `bin/opencode` 和 `src/index.ts` 的源代码
+3. 尝试添加一个自定义命令（如 `opencode hello`）
+4. 使用 `which opencode` 和 `ls -la` 追踪符号链接
+
+**只有真正理解了 CLI 的执行流程，才能在遇到问题时快速定位和解决。**
+
+
+## 2.5 命令系统:从单一命令到 28 个子命令
+
+### 2.5.1 问题:如何组织大量命令?
+
+OpenCode 有 28 个命令:
+- `opencode tui` - 启动 TUI 界面
+- `opencode session new` - 创建会话
+- `opencode models` - 列出模型
+- `opencode mcp list` - 列出 MCP 服务器
+- ...
+
+如果把所有逻辑写在一个文件中,会导致:
+- ❌ 文件过大(数千行)
+- ❌ 难以维护
+- ❌ 团队协作困难
+
+### 2.5.2 解决方案:命令模块化
+
+Yargs 支持通过 `.command()` 注册子命令:
+
+```typescript
+// src/index.ts
+import { ModelsCommand } from "./cli/cmd/models"
+import { SessionCommand } from "./cli/cmd/session"
+
+const cli = yargs(hideBin(process.argv))
+  .command(ModelsCommand)
+  .command(SessionCommand)
+  // ... 26 个其他命令
+```
+
+每个命令是一个独立的模块,遵循统一的接口:
+
+```typescript
+// src/cli/cmd/models.ts
+export const ModelsCommand = {
+  command: "models [provider]",
+  describe: "list all available models",
+  builder: (yargs) => {
+    return yargs
+      .positional("provider", {
+        describe: "provider ID to filter models by",
+        type: "string",
+      })
+      .option("verbose", {
+        describe: "use more verbose model output",
+        type: "boolean",
+      })
+  },
+  handler: async (args) => {
+    // 命令实现
+  },
+}
+```
+
+
+### 2.5.3 命令定义的四个关键部分
+
+让我们深入分析 `ModelsCommand` 的结构:
+
+#### 1. command:命令签名
+
+```typescript
+command: "models [provider]"
+```
+
+**语法规则:**
+- `models`:命令名称(必需)
+- `[provider]`:可选位置参数(用方括号包裹)
+- `<required>`:必需位置参数(用尖括号包裹)
+
+**示例:**
+```bash
+opencode models              # provider = undefined
+opencode models openai       # provider = "openai"
+```
+
+#### 2. describe:命令描述
+
+```typescript
+describe: "list all available models"
+```
+
+这个描述会出现在:
+- `opencode --help` 的命令列表中
+- `opencode models --help` 的顶部
+
+#### 3. builder:参数定义
+
+```typescript
+builder: (yargs) => {
+  return yargs
+    .positional("provider", {
+      describe: "provider ID to filter models by",
+      type: "string",
+    })
+    .option("verbose", {
+      describe: "use more verbose model output",
+      type: "boolean",
+    })
+}
+```
+
+**Builder 函数的职责:**
+- 定义位置参数(`.positional()`)
+- 定义选项参数(`.option()`)
+- 设置参数验证规则
+- 返回配置后的 yargs 实例
+
+**位置参数 vs 选项参数:**
+```bash
+opencode models openai --verbose
+#               ^^^^^^  ^^^^^^^^
+#               位置参数  选项参数
+```
+
+
+### 2.4.4 添加全局选项：日志控制
+
+OpenCode 需要两个全局选项来控制日志行为：
+
+```typescript
+const cli = yargs(hideBin(process.argv))
+  .scriptName("opencode")
+  .version("1.0.0")
+  .help()
+  .option("print-logs", {
+    describe: "print logs to stderr",
+    type: "boolean",
+  })
+  .option("log-level", {
+    describe: "log level",
+    type: "string",
+    choices: ["DEBUG", "INFO", "WARN", "ERROR"],
+  })
+
+cli.parse()
+```
+
+**选项定义的关键字段：**
+- `describe`：帮助信息中的描述
+- `type`：参数类型（`boolean`、`string`、`number`、`array`）
+- `choices`：限制可选值（自动验证）
+
+**测试：**
+
+```bash
+$ bun run src/index.ts --log-level=DEBUG
+# 正常执行
+
+$ bun run src/index.ts --log-level=INVALID
+# 错误: Invalid values:
+#   Argument: log-level, Given: "INVALID", Choices: "DEBUG", "INFO", "WARN", "ERROR"
+```
+
+**Yargs 自动验证了参数值！**
+
+### 2.4.5 中间件：统一的初始化逻辑
+
+现在我们有了参数解析，但每个命令都需要初始化日志系统。如果在每个命令中重复这些逻辑，会导致代码重复和维护困难。
+
+**Yargs 的解决方案：中间件（Middleware）**
+
+```typescript
+const cli = yargs(hideBin(process.argv))
+  .middleware(async (opts) => {
+    // 1. 初始化日志系统
+    await Log.init({
+      print: opts.printLogs,
+      level: opts.logLevel || "INFO",
+    })
+    
+    // 2. 设置环境变量
+    process.env.AGENT = "1"
+    process.env.OPENCODE = "1"
+    
+    // 3. 记录命令执行
+    Log.Default.info("opencode", {
+      version: "1.0.0",
+      args: process.argv.slice(2),
+    })
+  })
+  .scriptName("opencode")
+  .version("1.0.0")
+  .help()
+```
+
+**中间件的执行时机：**
+
+```
+用户执行: opencode models --provider=openai
+    ↓
+Yargs 解析参数
+    ↓
+执行中间件 (opts = { provider: "openai" })
+    ↓
+执行命令处理器 (ModelsCommand.handler)
+```
+
+**中间件的设计优势：**
+- ✅ 集中管理初始化逻辑
+- ✅ 所有命令自动获得日志能力
+- ✅ 可以访问解析后的参数（`opts`）
+- ✅ 支持异步操作（`async/await`）
+
+### 2.4.6 OpenCode 的实际中间件实现
+
+让我们分析 OpenCode 的实际代码：
+
+```typescript
+.middleware(async (opts) => {
+  await Log.init({
+    print: process.argv.includes("--print-logs"),
+    dev: Installation.isLocal(),
+    level: (() => {
+      if (opts.logLevel) return opts.logLevel as Log.Level
+      if (Installation.isLocal()) return "DEBUG"
+      return "INFO"
+    })(),
+  })
+
+  process.env.AGENT = "1"
+  process.env.OPENCODE = "1"
+
+  Log.Default.info("opencode", {
+    version: Installation.VERSION,
+    args: process.argv.slice(2),
+  })
+})
+```
+
+**设计细节分析：**
+
+1. **日志级别的三级优先级：**
+   ```typescript
+   level: (() => {
+     if (opts.logLevel) return opts.logLevel as Log.Level  // 1. 用户指定
+     if (Installation.isLocal()) return "DEBUG"            // 2. 本地开发
+     return "INFO"                                          // 3. 生产环境
+   })()
+   ```
+   
+   这是一个**立即执行函数表达式（IIFE）**，实现了清晰的优先级逻辑。
+
+2. **为什么检查 `process.argv` 而不是 `opts.printLogs`？**
+   ```typescript
+   print: process.argv.includes("--print-logs")
+   ```
+   
+   因为中间件执行时，Yargs 可能还没有完全解析所有选项。直接检查 `process.argv` 更可靠。
+
+3. **环境变量的作用：**
+   ```typescript
+   process.env.AGENT = "1"
+   process.env.OPENCODE = "1"
+   ```
+   
+   这些环境变量用于：
+   - 标识当前进程是 OpenCode Agent
+   - 某些功能会根据这些变量调整行为
+   - 子进程可以继承这些变量
+
+**现在你理解了第四个关键机制：Yargs 提供了强大的参数解析和中间件能力，让我们可以优雅地处理复杂的 CLI 逻辑。**
+
+但这引出了下一个问题：如何组织 28 个不同的命令？
+
+
+### 2.5.4 命令辅助函数:cmd()
+
+你可能注意到,OpenCode 的实际代码使用了 `cmd()` 包装器:
+
+```typescript
+export const ModelsCommand = cmd({
+  command: "models [provider]",
+  describe: "list all available models",
+  builder: (yargs) => { /* ... */ },
+  handler: async (args) => { /* ... */ },
+})
+```
+
+让我们看看 `cmd()` 的实现:
+
+```typescript
+// src/cli/cmd/cmd.ts
+export function cmd<T>(definition: CommandModule<{}, T>): CommandModule<{}, T> {
+  return {
+    ...definition,
+    handler: async (args) => {
+      try {
+        await definition.handler(args)
+      } catch (error) {
+        if (error instanceof NamedError) {
+          UI.error(error.message)
+          process.exit(1)
+        }
+        throw error
+      }
+    },
+  }
+}
+```
+
+**`cmd()` 的作用:**
+
+1. **统一的错误处理:**
+   - 捕获 `NamedError`(业务错误)
+   - 使用 `UI.error()` 显示友好的错误信息
+   - 退出码设置为 1
+
+2. **保持类型安全:**
+   - 泛型 `<T>` 保留原始参数类型
+   - TypeScript 可以正确推断 `args` 的类型
+
+3. **未捕获的错误会继续抛出:**
+   - 系统错误(如内存溢出)不会被吞掉
+   - 保留完整的堆栈跟踪
+
+**为什么需要 `NamedError`?**
+
+```typescript
+// 业务错误:用户友好的错误信息
+throw new NamedError("Provider not found: openai")
+// 输出: ✖ Provider not found: openai
+
+// 系统错误:保留堆栈跟踪
+throw new Error("Unexpected null pointer")
+// 输出: 完整的堆栈跟踪
+```
+
+
+### 2.5.5 嵌套命令:session 子命令
+
+OpenCode 有一些命令包含子命令,如 `session`:
+
+```bash
+opencode session new          # 创建会话
+opencode session list         # 列出会话
+opencode session prompt       # 发送消息
+```
+
+实现嵌套命令:
+
+```typescript
+// src/cli/cmd/session.ts
+export const SessionCommand = cmd({
+  command: "session",
+  describe: "manage sessions",
+  builder: (yargs) => {
+    return yargs
+      .command(SessionNewCommand)
+      .command(SessionListCommand)
+      .command(SessionPromptCommand)
+      .demandCommand(1, "You must specify a subcommand")
+  },
+  handler: () => {
+    // 父命令不需要实现,只用于组织子命令
+  },
+})
+
+export const SessionNewCommand = cmd({
+  command: "new",
+  describe: "create a new session",
+  builder: (yargs) => {
+    return yargs.option("agent", {
+      describe: "agent to use",
+      type: "string",
+    })
+  },
+  handler: async (args) => {
+    // 实现创建会话的逻辑
+  },
+})
+```
+
+**关键点:**
+
+1. **`.demandCommand(1, ...)`**:
+   - 要求至少指定一个子命令
+   - 如果用户只输入 `opencode session`,会显示错误
+
+2. **父命令的 handler 可以为空:**
+   - 父命令只用于组织子命令
+   - 实际逻辑在子命令中实现
+
+3. **子命令继承父命令的选项:**
+   ```bash
+   opencode session new --log-level=DEBUG
+   #                    ^^^^^^^^^^^^^^^^
+   #                    全局选项在所有命令中可用
+   ```
+
+
+## 2.6 UI 系统:统一的输出格式
+
+### 2.6.1 问题:为什么不直接使用 console.log?
+
+在命令实现中,我们经常看到 `UI.error()` 而不是 `console.error()`:
+
+```typescript
+if (!provider) {
+  UI.error(`Provider not found: ${args.provider}`)
+  return
+}
+```
+
+**直接使用 console 的问题:**
+- ❌ 无法统一样式(颜色、格式)
+- ❌ 难以测试(无法捕获输出)
+- ❌ 无法适配不同终端环境
+
+### 2.6.2 UI 抽象层的设计
+
+OpenCode 的 `UI` 模块提供了统一的输出接口:
+
+```typescript
+// src/cli/ui.ts
+export namespace UI {
+  export function error(message: string) {
+    process.stderr.write(Style.TEXT_ERROR + "✖ " + message + Style.TEXT_NORMAL + "\n")
+  }
+  
+  export function success(message: string) {
+    process.stdout.write(Style.TEXT_SUCCESS + "✔ " + message + Style.TEXT_NORMAL + "\n")
+  }
+  
+  export function println(message: string) {
+    process.stdout.write(message + "\n")
+  }
+}
+```
+
+**设计优势:**
+- ✅ 统一的视觉风格(✖ 和 ✔ 符号)
+- ✅ 自动添加 ANSI 颜色代码
+- ✅ 可以在测试中 mock
+- ✅ 支持不同的输出目标(stdout/stderr)
+
+
+## 2.7 完整的 CLI 架构
+
+现在我们可以总结 OpenCode CLI 的完整架构:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    OpenCode CLI 架构                      │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  ┌────────────────────────────────────────────────┐    │
+│  │  bin/opencode (启动器)                          │    │
+│  │  - 平台检测                                      │    │
+│  │  - 二进制文件查找                                │    │
+│  │  - 参数透传                                      │    │
+│  └──────────────┬─────────────────────────────────┘    │
+│                 │                                        │
+│                 ↓                                        │
+│  ┌────────────────────────────────────────────────┐    │
+│  │  src/index.ts (主入口)                          │    │
+│  │  - Yargs 初始化                                 │    │
+│  │  - 中间件注册                                    │    │
+│  │  - 命令注册                                      │    │
+│  └──────────────┬─────────────────────────────────┘    │
+│                 │                                        │
+│                 ↓                                        │
+│  ┌────────────────────────────────────────────────┐    │
+│  │  中间件层                                        │    │
+│  │  - Log.init()                                   │    │
+│  │  - 环境变量设置                                  │    │
+│  │  - 命令记录                                      │    │
+│  └──────────────┬─────────────────────────────────┘    │
+│                 │                                        │
+│                 ↓                                        │
+│  ┌────────────────────────────────────────────────┐    │
+│  │  命令层 (28 个命令)                              │    │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐     │    │
+│  │  │ models   │  │ session  │  │   mcp    │     │    │
+│  │  └──────────┘  └──────────┘  └──────────┘     │    │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐     │    │
+│  │  │   tui    │  │   auth   │  │  github  │     │    │
+│  │  └──────────┘  └──────────┘  └──────────┘     │    │
+│  │  ... (22 个其他命令)                            │    │
+│  └──────────────┬─────────────────────────────────┘    │
+│                 │                                        │
+│                 ↓                                        │
+│  ┌────────────────────────────────────────────────┐    │
+│  │  核心业务层                                      │    │
+│  │  - Instance.provide()                          │    │
+│  │  - Provider.list()                             │    │
+│  │  - Session.create()                            │    │
+│  │  - ...                                          │    │
+│  └────────────────────────────────────────────────┘    │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+
+## 2.8 实战练习:实现自定义命令
+
+现在让我们动手实现一个完整的命令,巩固所学知识。
+
+### 练习 1:实现 `opencode hello` 命令
+
+**需求:**
+- 命令: `opencode hello [name]`
+- 功能: 打印问候语
+- 选项: `--uppercase` 将输出转为大写
+
+**步骤 1:创建命令文件**
+
+```typescript
+// src/cli/cmd/hello.ts
+import { cmd } from "./cmd"
+import { UI } from "../ui"
+
+export const HelloCommand = cmd({
+  command: "hello [name]",
+  describe: "print a greeting message",
+  
+  builder: (yargs) => {
+    return yargs
+      .positional("name", {
+        describe: "name to greet",
+        type: "string",
+        default: "World",
+      })
+      .option("uppercase", {
+        describe: "convert output to uppercase",
+        type: "boolean",
+        default: false,
+      })
+  },
+  
+  handler: async (args) => {
+    let message = `Hello, ${args.name}!`
+    
+    if (args.uppercase) {
+      message = message.toUpperCase()
+    }
+    
+    UI.success(message)
+  },
+})
+```
+
+**步骤 2:注册命令**
+
+```typescript
+// src/index.ts
+import { HelloCommand } from "./cli/cmd/hello"
+
+const cli = yargs(hideBin(process.argv))
+  // ... 其他配置
+  .command(HelloCommand)
+  // ... 其他命令
+```
+
+**步骤 3:测试**
+
+```bash
+bun run src/index.ts hello
+# ✔ Hello, World!
+
+bun run src/index.ts hello Alice
+# ✔ Hello, Alice!
+
+bun run src/index.ts hello Bob --uppercase
+# ✔ HELLO, BOB!
+```
+
+
+### 练习 2:实现带子命令的 `config` 命令
+
+**需求:**
+- `opencode config get <key>` - 获取配置值
+- `opencode config set <key> <value>` - 设置配置值
+- `opencode config list` - 列出所有配置
+
+**实现提示:**
+
+```typescript
+// src/cli/cmd/config.ts
+export const ConfigCommand = cmd({
+  command: "config",
+  describe: "manage configuration",
+  builder: (yargs) => {
+    return yargs
+      .command(ConfigGetCommand)
+      .command(ConfigSetCommand)
+      .command(ConfigListCommand)
+      .demandCommand(1, "You must specify a subcommand")
+  },
+  handler: () => {},
+})
+
+export const ConfigGetCommand = cmd({
+  command: "get <key>",
+  describe: "get a configuration value",
+  builder: (yargs) => {
+    return yargs.positional("key", {
+      describe: "configuration key",
+      type: "string",
+    })
+  },
+  handler: async (args) => {
+    // TODO: 实现获取配置的逻辑
+    UI.println(`${args.key} = ...`)
+  },
+})
+
+// TODO: 实现 ConfigSetCommand 和 ConfigListCommand
+```
+
+## 2.9 技术难点与最佳实践
+
+### 2.9.1 参数验证
+
+Yargs 提供了强大的验证机制:
+
+```typescript
+builder: (yargs) => {
+  return yargs
+    .option("port", {
+      type: "number",
+      default: 3000,
+    })
+    .check((args) => {
+      if (args.port < 1024 || args.port > 65535) {
+        throw new Error("Port must be between 1024 and 65535")
+      }
+      return true
+    })
+}
+```
+
+
+### 2.9.2 异步命令处理
+
+所有命令处理器都应该是 `async`:
+
+```typescript
+handler: async (args) => {
+  // ✅ 正确:使用 await
+  const data = await fetchData()
+  
+  // ❌ 错误:忘记 await
+  const data = fetchData()  // 返回 Promise,不是实际数据
+}
+```
+
+### 2.9.3 错误处理模式
+
+```typescript
+handler: async (args) => {
+  try {
+    const result = await riskyOperation()
+    UI.success("Operation completed")
+  } catch (error) {
+    if (error instanceof NamedError) {
+      // 业务错误:友好提示
+      UI.error(error.message)
+      process.exit(1)
+    }
+    // 系统错误:抛出以显示堆栈
+    throw error
+  }
+}
+```
+
+### 2.9.4 进度显示
+
+对于长时间运行的命令,应该提供进度反馈:
+
+```typescript
+import { UI } from "../ui"
+
+handler: async (args) => {
+  UI.println("Downloading models...")
+  
+  for (const model of models) {
+    UI.println(`  - ${model.name}`)
+    await downloadModel(model)
+  }
+  
+  UI.success("All models downloaded")
+}
+```
+
+
+## 2.10 企业级价值与工程洞察
+
+### 2.10.1 为什么 CLI 优先?
+
+OpenCode 选择 CLI 作为主要交互方式,而不是 GUI,原因包括:
+
+1. **自动化友好:**
+   ```bash
+   # 可以轻松集成到脚本中
+   opencode session new --agent=build | tee session.log
+   ```
+
+2. **远程访问:**
+   ```bash
+   # SSH 到服务器后直接使用
+   ssh user@server
+   opencode tui
+   ```
+
+3. **版本控制:**
+   ```bash
+   # 命令可以写入文档和脚本
+   git commit -m "Add opencode integration"
+   ```
+
+4. **低资源消耗:**
+   - 不需要图形界面
+   - 适合容器和 CI/CD 环境
+
+### 2.10.2 CLI 设计的黄金法则
+
+1. **遵循 POSIX 约定:**
+   - 短选项用单破折号: `-v`
+   - 长选项用双破折号: `--version`
+   - 参数用等号或空格: `--log-level=DEBUG` 或 `--log-level DEBUG`
+
+2. **提供有用的帮助信息:**
+   - 每个命令都应该有 `--help`
+   - 描述应该简洁明了
+   - 提供使用示例
+
+3. **合理的默认值:**
+   - 最常用的选项应该是默认值
+   - 用户不应该为常见用例指定大量参数
+
+4. **一致的命名:**
+   - 动词-名词结构: `session new`, `mcp list`
+   - 避免缩写(除非是行业标准)
+
+
+### 2.10.3 从 OpenCode 学到的架构智慧
+
+1. **启动器模式:**
+   - 将平台检测逻辑与业务逻辑分离
+   - 使用 Node.js 脚本作为跨平台启动器
+   - 真正的二进制文件按平台分发
+
+2. **中间件模式:**
+   - 集中管理初始化逻辑
+   - 避免在每个命令中重复代码
+   - 支持横切关注点(日志、认证等)
+
+3. **命令模块化:**
+   - 每个命令一个文件
+   - 统一的命令接口
+   - 便于团队协作和维护
+
+4. **类型安全:**
+   - 使用 TypeScript 定义参数类型
+   - Yargs 自动推断参数类型
+   - 编译时捕获错误
+
+## 2.11 本章小结
+
+在本章中,我们从最简单的 "Hello World" 开始,逐步构建了一个完整的 CLI 系统:
+
+1. **可执行文件机制:**
+   - 理解 shebang 和 `package.json` 的 `bin` 字段
+   - 实现跨平台的启动器
+   - 掌握二进制文件查找算法
+
+2. **Yargs 框架:**
+   - 命令定义的四个部分(command、describe、builder、handler)
+   - 位置参数和选项参数
+   - 嵌套命令和子命令
+
+3. **中间件机制:**
+   - 统一的初始化逻辑
+   - 日志系统集成
+   - 环境变量管理
+
+4. **命令系统:**
+   - 模块化的命令组织
+   - 统一的错误处理
+   - UI 抽象层
+
+**关键收获:**
+- ✅ CLI 是 AI 编码助手的理想交互方式
+- ✅ Yargs 提供了强大的命令行解析能力
+- ✅ 模块化设计使得 28 个命令易于维护
+- ✅ 类型安全贯穿整个 CLI 系统
+
+**下一章预告:**
+
+在第三章中,我们将深入配置系统,学习如何使用 Zod 实现类型安全的配置验证,以及如何通过 Markdown 文件提供用户友好的配置方式。
+
