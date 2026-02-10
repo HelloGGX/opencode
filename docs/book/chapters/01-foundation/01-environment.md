@@ -935,7 +935,7 @@ EOF
 2. **环境准备**：通过 `setup-bun` 初始化运行时环境。这里假设我们已经封装了一个复用的 Action 来统一管理 Bun 的版本和配置，这符合我们在软件工程中推崇的 DRY（Don't Repeat Yourself）原则。
 3. **执行检查**：运行 `bun typecheck`。
 
-需要注意的是，这里的 `bun typecheck` 通常是在 `package.json` 中定义的脚本，其底层往往调用了 `"typecheck": "tsgo --noEmit"`。`--noEmit` 标志非常关键，它告诉编译器：“我们只需要检查类型是否正确，不需要输出任何编译后的文件。”
+需要注意的是，这里的 `bun typecheck` 通常是在 `package.json` 中定义的脚本，其底层往往调用了 `"typecheck": "tsc --noEmit"`。`--noEmit` 标志非常关键，它告诉编译器：“我们只需要检查类型是否正确，不需要输出任何编译后的文件。”
 
 通过这样一个独立且严谨的工作流，我们成功地将类型安全检查与构建过程解耦。
 
