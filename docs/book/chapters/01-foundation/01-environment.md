@@ -50,7 +50,7 @@ Bun 的集成设计避免了在同一项目中引入多个工具（如 npm + Jes
 bun --version
 ```
 
-如果系统已经安装了Bun，你会看到类似`1.3.5`的版本号输出。如果看到"command not found"或类似错误，说明系统中还没有安装Bun，这时需要执行安装程序。
+如果系统已经安装了 Bun，你会看到类似 `1.3.8` 的版本号输出。如果看到 "command not found" 或类似错误，说明系统中还没有安装 Bun，这时需要执行安装程序。
 
 在macOS和Linux系统上，Bun的安装非常简单。执行以下命令即可完成安装：
 
@@ -68,9 +68,7 @@ source ~/.zshrc
 source ~/.bashrc
 ```
 
-现在再次执行`bun --version`，你应该能看到Bun的版本号了。请注意，参考项目指定使用`bun@1.3.9`版本，如果你的Bun版本与此不同，可能会遇到兼容性问题。在这种情况下，你可以使用bun upgrade升级到最新版本, 笔者在写这篇文档时, Bun的最新版本是`1.3.9`
-
-如果遇到版本兼容问题，可以使用 `bun upgrade` 升级到与项目兼容的版本（本文档编写时推荐使用 1.3.x 版本系列）。
+现在再次执行 `bun --version`，你应该能看到 Bun 的版本号了。参考项目指定使用 `bun@1.3.8` 版本，如果遇到版本兼容问题，可以使用 `bun upgrade` 升级到与项目兼容的版本（本文档编写时推荐使用 1.3.x 版本系列）。
 
 对于Windows用户，Bun提供了专门的安装程序。可以通过PowerShell执行以下命令：
 
@@ -224,7 +222,7 @@ cat > package.json << 'EOF'
   "description": "AI-powered development tool - Monorepo tutorial",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.9",
+  "packageManager": "bun@1.3.8",
   "scripts": {
     "dev": "echo '开发模式启动...'",
     "typecheck": "echo '类型检查...'"
@@ -234,7 +232,7 @@ cat > package.json << 'EOF'
       "packages/*"
     ],
     "catalog": {
-      "@types/bun": "1.3.5",
+      "@types/bun": "1.3.8",
       "typescript": "5.8.2"
     }
   },
@@ -264,7 +262,7 @@ cat package.json
 - `"description"`字段描述项目的用途。这是一个重要的字段，因为它会出现在npm包的README中，帮助其他开发者了解项目的功能。
 - `"private": true`设置非常重要。对于内部项目或不想发布到npm的包，必须设置这个选项为true。如果忘记设置这个选项，npm publish会拒绝发布私有包。
 - `"type": "module"`声明这个包使用ES Modules语法。这是Bun原生支持的模式，与现代JavaScript生态接轨。如果不使用这个选项，Bun会默认使用CommonJS语法。
-- `"packageManager"`字段指定了项目使用的包管理器及其版本。`"bun@1.3.9"`表示这个项目必须使用 Bun 1.3.9 版本 。它确保了所有开发者、CI/CD系统和部署环境都使用相同的Bun版本，避免了版本冲突和不一致的问题。
+- `"packageManager"`字段指定了项目使用的包管理器及其版本。`"bun@1.3.8"`表示这个项目必须使用 Bun 1.3.8 版本。它确保了所有开发者、CI/CD系统和部署环境都使用相同的Bun版本，避免了版本冲突和不一致的问题。
 - `"workspaces"`是Monorepo配置的核心。它包含两部分：`packages` 定义了子包的位置模式，`catalog`定义了共享依赖的版本。
   - `workspaces.packages`使用glob模式匹配子包位置。`"packages/*"`表示packages目录下的所有直接子目录都是独立的工作区。这意味着packages/opencode、packages/sdk、packages/app都会被识别为独立的包，可以相互引用。
   - `workspaces.catalog`是Bun提供的一个强大特性，称为"目录版本控制"。开发者只需在根目录的 `package.json` 文件中定义一次依赖版本。子包会通过 `catalog:` 协议来引用这些版本。开发者在一处修改版本号，该修改会在全局生效。这种机制能确保所有包都使用相同版本的依赖，避免了版本冲突和不一致的问题。
@@ -451,7 +449,7 @@ bun add -d @tsconfig/bun
 "workspaces": {
     "packages": ["packages/*"],
     "catalog": {
-      "@types/bun": "1.3.5",
+      "@types/bun": "1.3.8",
       "typescript": "5.8.2",
       "@tsconfig/bun": "1.0.9"
     }
@@ -570,7 +568,7 @@ bun run husky init
 ```
 
 这会在项目根目录自动创建`.husky`文件夹，该文件夹中包含了一些默认的 Git 钩子脚本，如 pre-commit、pre-push 等。
-需要说明的是，在最新版本的 Husky 中，`bun run husky init` 会自动在 package.json 的 scripts 中添加 `"prepare": "husky"` 命令，无需手动添加。这个命令会在依赖安装完成后自动初始化 Husky 并确保 Git Hooks 生效。
+同时`bun run husky init` 会自动在 package.json 的 scripts 中添加 `"prepare": "husky"` 命令，无需手动添加。这个命令会在依赖安装完成后自动初始化 Husky 并确保 Git Hooks 生效。
 
 ```json
 {
@@ -778,9 +776,13 @@ EOF
 
 如果分别为 Linux 和 Windows 编写独立的 Workflow，不仅会引入大量重复配置，还会在后续维护中不断放大改动成本，这显然违背了 DRY 原则。为了解决这一问题，GitHub Actions 提供了 matrix（矩阵）策略，使我们能够在保留统一执行流程的前提下，对不同运行环境进行参数化配置。
 
-在这种模式下，测试流程本身只需要定义一次，而操作系统、运行节点、依赖安装方式以及具体的测试命令等平台差异，则通过 matrix 作为配置项传入。GitHub Actions 会基于 matrix 中的每一组配置，自动生成并执行对应的测试任务。首先我们创建文件`test.yml` 并添加以下内容：
+在这种模式下，测试流程本身只需要定义一次，而操作系统、运行节点、依赖安装方式以及具体的测试命令等平台差异，则通过 matrix 作为配置项传入。GitHub Actions 会基于 matrix 中的每一组配置，自动生成并执行对应的测试任务。
 
-```yaml
+接下来我们创建完整的 test.yml 配置文件：
+
+```bash
+# 创建 test.yml 配置文件
+cat > .github/workflows/test.yml << 'EOF'
 name: test
 
 on:
@@ -789,84 +791,12 @@ on:
       - dev
   pull_request:
   workflow_dispatch:
-jobs:
-  test:
-    strategy:
-      fail-fast: false # 关键：避免单点失败导致整个矩阵立即终止，我们需要看到所有平台的测试结果
-      matrix:
-        settings:
-          - name: linux
-            host: ubuntu-latest
-            playwright: bunx playwright install --with-deps
-            workdir: .
-            command: |
-              git config --global user.email "XXXX"
-              git config --global user.name "opencode"
-              bun turbo test
-          - name: windows
-            host: windows-latest
-            playwright: bunx playwright install
-            workdir: packages/app
-            command: bun test:e2e:local
-```
 
-首先是 **触发机制**。我们定义了三种触发时机：
-* 当有代码推送到 `dev` 分支时；
-* 当有针对 `dev` 分支的 Pull Request 被创建或更新时；
-* 以及通过 `workflow_dispatch` 允许手动触发。
-
-这种设计体现了 **“尽早发现”** 的原则。在 Pull Request 阶段就拦截错误，可以避免污染主分支的稳定性，将问题解决在合并之前。
-
-在该 matrix 中，我们定义了两个测试配置：linux 和 windows。它们共享同一套测试流程，但在运行节点（host）、Playwright 的安装方式、工作目录以及最终执行的测试命令上各自独立，从而准确反映不同操作系统下的真实运行环境。这里有三个细节值得注意：
-1. 我们将 fail-fast 设置为 false。这是因为在 CI 环境中，Windows 任务通常比 Linux 慢。如果 Linux 任务失败了，我们通常仍希望看到 Windows 任务的结果，以便判断这是否是一个特定平台的 Bug，还是通用逻辑的错误。
-2. Linux 环境下运行 Playwright 通常需要额外安装系统依赖（--with-deps），而 Windows 环境通常不需要或已预置，Matrix 让我们能轻松处理这种差异。
-3. 我们在linux测试命令前添加了 git config --global user.email 和 git config --global user.name，这是因为在执行bun turbo test时，子包中可能存在git操作，Git 要求必须配置 user.email 和 user.name 否则会报错, 在后续的子包的单元测试的编写中，我们会用到这些配置。
-
-定义好了矩阵，下一步是将这些配置映射到真实的虚拟机上。
-
-```yaml
-    runs-on: ${{ matrix.settings.host }}
-    defaults:
-      run:
-        shell: bash
-```
-通过将 runs-on 设置为 ${{ matrix.settings.host }}，GitHub Actions 会为矩阵中的每组配置创建一个独立的 Job，并在指定的操作系统（如 Linux 或 Windows）上运行相同的测试步骤。这样，Linux 和 Windows 的差异就直接由运行环境来处理，而不需要在代码中用 if-else 分支来手动区分。
-但这里更值得玩味的是 `defaults.run.shell: bash`。我们知道，Windows 的原生 Shell 是 PowerShell 或 CMD，而 Linux 是 Bash。如果任由默认行为发生，我们在编写后续的 steps 时，就需要区分这两者的差异。通过设置 `shell: bash`，强制 GitHub Actions 在 Windows 环境中也使用 Git Bash 来执行命令, 这使得我们可以放心地在 steps 中使用 rm -rf、export 等标准 Linux 命令，而无需为 Windows 编写繁琐的 PowerShell 替代方案。。
-
-接下来我们配置steps：
-
-```yaml
- steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Bun
-        uses: ./.github/actions/setup-bun
-
-```
-第一步，我们需要检出代码仓库到CI运行环境中。使用官方的checkout Action版本4，确保获取最新代码和完整的Git历史。默认的checkout使用只读权限，为了能够在后续步骤中执行如bun install等需要写入权限的操作，我们需要传递token参数，将GITHUB_TOKEN作为写入权限的凭证。
-第二步，我们使用自定义的setup-bun Action，将Bun安装到CI运行环境中。该Action会利用缓存机制，避免重复安装，显著提升构建效率。
-
-后续步骤涉及测试库的安装和执行测试命令。根据不同平台的配置，我们需要在不同的工作目录下执行命令。从前面可以看出，我们使用playwright作为测试库，它是微软开发的现代化端到端测试工具，用于测试Web应用程序在不同浏览器中的行为。我们这里暂时不编写后续的steps，等到我们开发子包opencode时， 开始编写测试用例，才会涉及该部分的CI/CD流程，因此放到后续完善。
-
-当前的完整的测试工作流配置如下：
-
-```yaml
-name: test
-
-on:
-  push:
-    branches:
-      - dev
-  pull_request:
-  workflow_dispatch:
 jobs:
   test:
     name: test (${{ matrix.settings.name }})
     strategy:
-      fail-fast: false
+      fail-fast: false # 关键：避免单点失败导致整个矩阵立即终止，我们需要看到所有平台的测试结果
       matrix:
         settings:
           - name: linux
@@ -894,7 +824,51 @@ jobs:
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
+
+      - name: Install Playwright dependencies
+        run: ${{ matrix.settings.playwright }}
+
+      - name: Run tests
+        run: |
+          cd ${{ matrix.settings.workdir }}
+          ${{ matrix.settings.command }}
+EOF
 ```
+
+首先是 **触发机制**。我们定义了三种触发时机：
+* 当有代码推送到 `dev` 分支时；
+* 当有针对 `dev` 分支的 Pull Request 被创建或更新时；
+* 以及通过 `workflow_dispatch` 允许手动触发。
+
+这种设计体现了 **“尽早发现”** 的原则。在 Pull Request 阶段就拦截错误，可以避免污染主分支的稳定性，将问题解决在合并之前。
+
+在该 matrix 中，我们定义了两个测试配置：linux 和 windows。它们共享同一套测试流程，但在运行节点（host）、Playwright 的安装方式、工作目录以及最终执行的测试命令上各自独立，从而准确反映不同操作系统下的真实运行环境。这里有三个细节值得注意：
+1. 我们将 fail-fast 设置为 false。这是因为在 CI 环境中，Windows 任务通常比 Linux 慢。如果 Linux 任务失败了，我们通常仍希望看到 Windows 任务的结果，以便判断这是否是一个特定平台的 Bug，还是通用逻辑的错误。
+2. Linux 环境下运行 Playwright 通常需要额外安装系统依赖（--with-deps），而 Windows 环境通常不需要或已预置，Matrix 让我们能轻松处理这种差异。
+3. 我们在linux测试命令前添加了 git config --global user.email 和 git config --global user.name，这是因为在执行bun turbo test时，子包中可能存在git操作，Git 要求必须配置 user.email 和 user.name 否则会报错, 在后续的子包的单元测试的编写中，我们会用到这些配置。
+
+定义好了矩阵，下一步是将这些配置映射到真实的虚拟机上。
+
+通过将 runs-on 设置为 ${{ matrix.settings.host }}，GitHub Actions 会为矩阵中的每组配置创建一个独立的 Job，并在指定的操作系统（如 Linux 或 Windows）上运行相同的测试步骤。这样，Linux 和 Windows 的差异就直接由运行环境来处理，而不需要在代码中用 if-else 分支来手动区分。
+但这里更值得玩味的是 `defaults.run.shell: bash`。我们知道，Windows 的原生 Shell 是 PowerShell 或 CMD，而 Linux 是 Bash。如果任由默认行为发生，我们在编写后续的 steps 时，就需要区分这两者的差异。通过设置 `shell: bash`，强制 GitHub Actions 在 Windows 环境中也使用 Git Bash 来执行命令, 这使得我们可以放心地在 steps 中使用 rm -rf、export 等标准 Linux 命令，而无需为 Windows 编写繁琐的 PowerShell 替代方案。。
+
+接下来我们看看steps：
+
+```yaml
+ steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+```
+第一步，我们需要检出代码仓库到CI运行环境中。使用官方的checkout Action版本4，确保获取最新代码和完整的Git历史。默认的checkout使用只读权限，为了能够在后续步骤中执行如bun install等需要写入权限的操作，我们需要传递token参数，将GITHUB_TOKEN作为写入权限的凭证。
+第二步，我们使用自定义的setup-bun Action，将Bun安装到CI运行环境中。该Action会利用缓存机制，避免重复安装，显著提升构建效率。
+
+后续步骤涉及测试库的安装和执行测试命令。根据不同平台的配置，我们需要在不同的工作目录下执行命令。从前面可以看出，我们使用 playwright 作为测试库，它是微软开发的现代化端到端测试工具，用于测试 Web 应用程序在不同浏览器中的行为。
 
 ### 2.5.5 配置类型检查工作流
 我们在 `.github/workflows` 目录下创建一个名为 `typecheck.yml` 的配置文件。这个文件定义了 GitHub Actions 的类型检查工作流，其核心内容如下：
@@ -964,7 +938,7 @@ git push origin dev
   "description": "AI-powered development tool",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.9",
+  "packageManager": "bun@1.3.8",
   "scripts": {
     "dev": "bun run --cwd packages/opencode src/index.ts",
     "typecheck": "bun turbo typecheck",
@@ -978,7 +952,7 @@ git push origin dev
     ],
     "catalog": {
       "typescript": "5.8.2",
-      "@types/bun": "1.3.5",
+      "@types/bun": "1.3.8",
       "@tsconfig/bun": "1.0.9"
     }
   },
