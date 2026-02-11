@@ -1,16 +1,14 @@
-# 1.2 CLI 骨架：一条命令的完整旅程
+# 1.2 CLI 骨架：一条命令的完整生命周期
 
-## 2.0 开篇：从用户的第一次体验说起
+## 2.0 引言：从 opencode --version 说起
 
 想象你是 OpenCode 的新用户。你刚刚看到 GitHub 上的 README，按照说明执行了安装命令：
 
 ```bash
-$ bun install -g opencode
+$ bun add -g opencode-ai
 ```
 
-终端滚动了一堆日志，最后显示"安装成功"。现在，你会做什么？
-
-大多数人会输入：
+终端滚动了一堆日志，最后显示"安装成功"。接着大多数人会输入：
 
 ```bash
 $ opencode --version
@@ -19,34 +17,9 @@ opencode version 1.1.39
 
 **就这么简单的一行输出，背后却隐藏着整个 CLI 系统的精妙设计。**
 
-在本章中，我们将像侦探一样追踪这条命令的完整旅程，从用户按下回车的那一刻，到屏幕上显示版本号，揭开每一个环节的技术细节。更重要的是，我们会理解**为什么**要这样设计，以及在构建自己的 CLI 工具时如何做出正确的决策。
+在本章中，我们将逐步拆解CLI系统背后的技术细节，从用户按下回车的那一刻，到屏幕上显示版本号经历的整个生命周期。更重要的是，我们会理解**为什么**要这样设计，以及在构建自己的 CLI 工具时如何做出正确的决策。
 
-### 2.0.1 本章的学习路径
-
-我们将按照命令执行的真实流程，逐层深入：
-
-```
-用户输入 opencode --version
-    ↓
-操作系统如何找到 opencode？        → package.json 的 bin 字段
-    ↓
-bin/opencode 是什么？              → Shebang 和启动器模式
-    ↓
-如何处理不同平台？                 → 平台检测和二进制查找
-    ↓
---version 参数如何解析？           → Yargs 框架
-    ↓
-如何支持 28 个命令？               → 命令系统架构
-```
-
-每一步都会回答三个问题：
-1. **What**: 发生了什么？
-2. **How**: 如何实现的？
-3. **Why**: 为什么这样设计？
-
-## 2.1 第一站：操作系统如何找到 opencode？
-
-### 2.1.1 追踪可执行文件的位置
+## 2.1 入口机制：操作系统如何找到 opencode？
 
 当你在终端输入 `opencode` 时，操作系统需要知道去哪里找这个程序。让我们用 `which` 命令追踪一下：
 
@@ -55,49 +28,106 @@ $ which opencode
 /usr/local/bin/opencode
 ```
 
-**发现 1：** `opencode` 在 `/usr/local/bin/` 目录下。
-
 这个目录通常在系统的 `PATH` 环境变量中，所以操作系统能找到它。但这引出了第一个问题：
 
-**问题 1：这个文件是谁放在那里的？**
+**这个文件是谁放在那里的？**
 
-让我们看看这个文件的详细信息：
+### 2.1.1 两种截然不同的策略
+
+有趣的是，根据你使用的**包管理器不同**，答案会完全不同：
+
+| 包管理器 | 安装命令 | 机制 | 文件类型 |
+|---------|---------|------|---------|
+| **npm** | `npm i -g opencode-ai` | 符号链接 + Node.js 启动器 | 文本脚本 |
+| **Bun** | `bun add -g opencode-ai` | 直接放置预编译二进制 | 原生可执行文件 |
+
+这两种策略代表了 CLI 工具分发的两种哲学：
+- **npm 策略**：跨平台兼容优先，通过启动器脚本适配不同环境
+- **Bun 策略**：性能优先，直接分发编译后的原生二进制
+
+让我们分别深入分析这两种机制。
+
+---
+
+## 策略 A：npm 的符号链接 + 启动器模式
+
+## 2.1.2 npm 安装的文件结构
+
+当你使用 npm 安装 opencode 时，npm 会在全局 bin 目录创建一个可执行文件。这个文件的具体形式**因操作系统而异**：
+
+### macOS/Linux：符号链接
 
 ```bash
 $ ls -la /usr/local/bin/opencode
 lrwxr-xr-x  1 user  staff  45 Jan 10 10:00 /usr/local/bin/opencode -> ../lib/node_modules/opencode/bin/opencode
 ```
 
-**发现 2：** 这不是一个真正的文件，而是一个**符号链接**（symbolic link）！
+**特点**：
+- 文件类型是 `l`（符号链接）
+- 箭头指向 `node_modules/opencode/bin/opencode`
+- 不是真正的文件，只是"快捷方式"
 
-它指向了 `../lib/node_modules/opencode/bin/opencode`。
+### Windows：包装脚本
 
-**问题 2：这个符号链接是谁创建的？**
-
-### 2.1.2 揭秘：package.json 的 bin 字段
-
-答案在 `package.json` 中。当你执行 `bun install -g opencode` 时，包管理器会读取这个配置：
-
-```json
-// packages/opencode/package.json
-{
-  "name": "opencode",
-  "bin": {
-    "opencode": "./bin/opencode"
-  }
-}
+```bash
+# Windows + Git Bash
+$ ls -la /c/Users/Administrator/AppData/Roaming/npm/opencode
+-rwxr-xr-x 1 Administrator 197121 417 Feb 11 22:33 /c/Users/Administrator/AppData/Roaming/npm/opencode*
+# 注意：没有 "l" 标记，是普通文件（不是符号链接）
 ```
 
-**`bin` 字段的作用：**
+**你的实际验证结果**（Windows）：
+```bash
+-rwxr-xr-x 1 Administrator 197121 417  Feb 11 22:33 /c/Users/Administrator/AppData/Roaming/npm/opencode*
+```
 
-这个配置告诉包管理器："当用户安装这个包时，请创建一个名为 `opencode` 的命令，指向 `./bin/opencode` 文件。"
+这个 417 字节的文件实际上是一个 **Shell 脚本包装器**，内容如下：
 
-包管理器会自动：
-1. 将包安装到 `node_modules/opencode/`
-2. 在 `/usr/local/bin/` 创建符号链接
-3. 链接指向 `node_modules/opencode/bin/opencode`
+```bash
+#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")
 
-**这就是为什么你可以在任何目录下直接输入 `opencode`。**
+case `uname` in
+    *CYGWIN*|*MINGW*|*MSYS*)
+        if command -v cygpath > /dev/null 2>&1; then
+            basedir=`cygpath -w "$basedir"`
+        fi
+    ;;
+esac
+
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/node_modules/opencode-ai/bin/opencode" "$@"
+else 
+  exec node  "$basedir/node_modules/opencode-ai/bin/opencode" "$@"
+fi
+```
+
+**脚本解析：**
+- 第 1 行：`#!/bin/sh` - 指定用 Shell 执行
+- 第 2 行：获取脚本所在目录，处理了 Windows 路径分隔符
+- 第 3-11 行：检测是否在 Cygwin/MinGW/MSYS 环境下，转换路径格式
+- 第 12-15 行：优先使用脚本同目录下的 `node`，否则使用系统 `node`
+- 第 16 行：最终执行真正的入口脚本
+
+**为什么会有这种差异？**
+- Windows 对符号链接的支持较弱（需要管理员权限）
+- npm 选择使用 Shell 脚本来保证跨平台兼容性
+- Git Bash 可以执行这些脚本，所以用户体验一致
+
+### 统一的行为
+
+无论哪种实现方式，最终都会调用 `node_modules/opencode-ai/bin/opencode`：
+
+```
+npm 安装
+    ↓
+创建可执行文件
+    ↓
+macOS: 符号链接 → ../lib/node_modules/opencode/bin/opencode
+Windows: 脚本 exec → node_modules/opencode-ai/bin/opencode
+    ↓
+最终都执行同一个文件
+```
 
 ### 2.1.3 实验：验证这个机制
 
@@ -589,7 +619,111 @@ Node.js 执行启动器脚本
 
 **现在你理解了第三个关键机制：启动器模式通过一个轻量级的 Node.js 脚本，实现了跨平台的二进制文件分发和执行。**
 
-但这引出了下一个问题：二进制文件接收到 `--version` 参数后，如何解析和处理？
+---
+
+## 策略 B：Bun 的预编译二进制模式
+
+现在让我们看看另一种截然不同的策略。当你使用 Bun 安装 opencode 时，会发生什么？
+
+### 2.3.8 Bun 安装的实际验证
+
+在 Windows + Git Bash 环境中执行：
+
+```bash
+$ which opencode
+/c/Users/Administrator/.bun/bin/opencode
+
+$ ls -la /c/Users/Administrator/.bun/bin/opencode
+-rwxr-xr-x 1 Administrator 197121 152492032 Dec 31 22:00 /c/Users/Administrator/.bun/bin/opencode
+```
+
+**惊人的发现：**
+
+| 对比项 | npm 安装 | Bun 安装 |
+|-------|---------|---------|
+| **文件类型** | `lrwxr-xr-x`（符号链接） | `-rwxr-xr-x`（普通文件） |
+| **文件大小** | ~2KB（脚本） | ~152MB（二进制） |
+| **实际内容** | Node.js 启动器脚本 | Windows PE 可执行文件 |
+| **是否需要 Node.js** | 是 | 否 |
+
+### 2.3.9 为什么 Bun 不需要启动器？
+
+Bun 采用了一种更现代化的分发策略：
+
+```
+npm install -g opencode:
+  符号链接 → JS启动器 → 查找平台二进制 → 执行
+  （多层包装，依赖 Node.js 运行时）
+
+bun install -g opencode:
+  直接下载预编译二进制 → 放到 PATH
+  （单层，自包含，无需运行时）
+```
+
+**Bun 的优势：**
+
+1. **零依赖**：可执行文件是自包含的，不需要系统预装 Node.js
+2. **启动更快**：没有脚本解析和子进程创建的开销
+3. **简化分发**：每个平台一个文件，无需复杂的启动器逻辑
+
+**Bun 的实现原理：**
+
+Bun 使用 `bun build --compile` 将 TypeScript/JavaScript 代码编译为原生二进制：
+
+```typescript
+// 开发时的源码
+// packages/opencode/src/index.ts
+import { cli } from "./cli"
+cli.parse(process.argv)
+```
+
+```bash
+# 构建时编译为原生二进制
+bun build --compile --target=windows-x64 ./src/index.ts --outfile opencode-windows-x64
+
+# 生成的 opencode-windows-x64 是一个完整的可执行文件
+# 包含：Bun 运行时 + 你的代码 + 依赖
+```
+
+### 2.3.10 两种策略的权衡
+
+| 维度 | npm 策略 | Bun 策略 |
+|-----|---------|---------|
+| **兼容性** | ✅ 更好（任何有 Node.js 的环境） | ⚠️ 需要对应平台的预编译版本 |
+| **性能** | ⚠️ 有启动开销 | ✅ 原生速度 |
+| **文件大小** | ✅ 小（几 KB 脚本） | ❌ 大（包含运行时，~150MB） |
+| **复杂度** | ⚠️ 需要启动器逻辑 | ✅ 简单直接 |
+| **调试** | ✅ 可阅读源码 | ⚠️ 二进制难以调试 |
+| **生态系统** | ✅ npm 生态成熟 | ⚠️ Bun 生态较新 |
+
+**选择建议：**
+
+- **选择 npm 策略**：如果你的 CLI 需要支持各种环境（包括旧系统），或者需要让用户能轻松阅读/修改源码
+- **选择 Bun 策略**：如果你追求极致性能，且目标用户愿意使用 Bun 作为包管理器
+
+### 2.3.11 混合策略：未来的方向
+
+实际上，OpenCode 项目采用了**混合策略**：
+
+```
+源码仓库
+├── bin/opencode           # npm 策略：Node.js 启动器脚本
+├── src/index.ts           # 源码入口
+└── build/
+    ├── opencode-darwin-arm64    # Bun 编译：macOS ARM
+    ├── opencode-darwin-x64      # Bun 编译：macOS x64
+    ├── opencode-linux-x64       # Bun 编译：Linux
+    └── opencode-windows-x64.exe # Bun 编译：Windows
+```
+
+- **npm 用户**：获得启动器脚本，由脚本找到对应平台的二进制
+- **Bun 用户**：直接获得对应平台的预编译二进制
+
+这种设计兼顾了两者的优势。
+
+---
+
+但这引出了下一个问题：无论通过哪种方式启动，二进制文件接收到 `--version` 参数后，如何解析和处理？
 
 
 ## 2.4 第四站：参数解析 - 从手动到 Yargs
