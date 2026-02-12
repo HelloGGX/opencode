@@ -2,134 +2,117 @@
 
 ## 2.0 引言：从 opencode --version 说起
 
-想象你是 OpenCode 的新用户。你刚刚看到 GitHub 上的 README，按照说明执行了安装命令：
+想象你是 OpenCode 的新用户。你刚刚看到 GitHub 上的 README，按照说明执行了安装命令，我们以bun 命令为例：
 
 ```bash
 $ bun add -g opencode-ai
 ```
 
-终端滚动了一堆日志，最后显示"安装成功"。接着大多数人会输入：
+接着会输出安装成功的信息：
+
+```bash
+bun add -g opencode-ai
+
+bun add v1.3.9 (cf6cdbbb)
+
+installed opencode-ai@1.1.59 with binaries:
+
+- opencode
+
+[25.00ms] done
+```
+接着大多数人会输入：
 
 ```bash
 $ opencode --version
-opencode version 1.1.39
+1.1.59
 ```
+这行简单的命令，背后发生了什么？
 
-**就这么简单的一行输出，背后却隐藏着整个 CLI 系统的精妙设计。**
+在本章中，我们将追踪这条命令的完整生命周期，详细解读从用户按下回车的那一刻，到屏幕上显示版本号其背后的技术细节。更重要的是，你会理解**为什么**要这样设计，以及在构建自己的 CLI 工具时如何做出正确的决策。
 
-在本章中，我们将逐步拆解CLI系统背后的技术细节，从用户按下回车的那一刻，到屏幕上显示版本号经历的整个生命周期。更重要的是，我们会理解**为什么**要这样设计，以及在构建自己的 CLI 工具时如何做出正确的决策。
+## 2.1 操作系统如何找到 opencode？
 
-## 2.1 入口机制：操作系统如何找到 opencode？
+### 2.1.1 追踪可执行文件的位置
 
-当你在终端输入 `opencode` 时，操作系统需要知道去哪里找这个程序。让我们用 `which` 命令追踪一下：
+当你在终端输入 `opencode` 时，操作系统需要知道去哪里找这个程序。让我们用 `type` 命令追踪一下：
 
 ```bash
-$ which opencode
-/usr/local/bin/opencode
+$ type opencode
+opencode is /Users/gavin/.bun/bin/opencode
 ```
+type 是 shell 内置命令，用于解析命令来源。type 命令返回了具体的文件路径, 这说明：opencode 被解析为一个外部命令，并且对应的路径是 `/Users/gavin/.bun/bin/opencode`。
+那么shell 是如何找到这个路径的？这里就是 PATH 环境变量发挥作用的地方。
 
-这个目录通常在系统的 `PATH` 环境变量中，所以操作系统能找到它。但这引出了第一个问题：
-
-**这个文件是谁放在那里的？**
-
-### 2.1.1 两种截然不同的策略
-
-有趣的是，根据你使用的**包管理器不同**，答案会完全不同：
-
-| 包管理器 | 安装命令 | 机制 | 文件类型 |
-|---------|---------|------|---------|
-| **npm** | `npm i -g opencode-ai` | 符号链接 + Node.js 启动器 | 文本脚本 |
-| **Bun** | `bun add -g opencode-ai` | 直接放置预编译二进制 | 原生可执行文件 |
-
-这两种策略代表了 CLI 工具分发的两种哲学：
-- **npm 策略**：跨平台兼容优先，通过启动器脚本适配不同环境
-- **Bun 策略**：性能优先，直接分发编译后的原生二进制
-
-让我们分别深入分析这两种机制。
-
----
-
-## 策略 A：npm 的符号链接 + 启动器模式
-
-## 2.1.2 npm 安装的文件结构
-
-当你使用 npm 安装 opencode 时，npm 会在全局 bin 目录创建一个可执行文件。这个文件的具体形式**因操作系统而异**：
-
-### macOS/Linux：符号链接
+我们可以输出命令：
+```bash
+echo $PATH
+```
+你会看到类似这样的输出：
 
 ```bash
-$ ls -la /usr/local/bin/opencode
-lrwxr-xr-x  1 user  staff  45 Jan 10 10:00 /usr/local/bin/opencode -> ../lib/node_modules/opencode/bin/opencode
+/Users/gavin/.bun/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 ```
+PATH 环境变量是一个以冒号分隔的目录列表。
+当 shell 需要解析一个外部命令时，它会按顺序遍历这些目录：
+1. 将命令名拼接到目录后
+2. 判断该路径是否存在
+3. 检查是否具有可执行权限
+4. 找到第一个匹配项后停止搜索
+5. 调用 execve() 系统调用交给内核加载执行
 
-**特点**：
-- 文件类型是 `l`（符号链接）
-- 箭头指向 `node_modules/opencode/bin/opencode`
-- 不是真正的文件，只是"快捷方式"
-
-### Windows：包装脚本
+在我的环境中，shell 找到的路径是：
+```bash
+/Users/gavin/.bun/bin/opencode
+```
+我们继续往下追踪。
 
 ```bash
-# Windows + Git Bash
-$ ls -la /c/Users/Administrator/AppData/Roaming/npm/opencode
--rwxr-xr-x 1 Administrator 197121 417 Feb 11 22:33 /c/Users/Administrator/AppData/Roaming/npm/opencode*
-# 注意：没有 "l" 标记，是普通文件（不是符号链接）
+$ ls -la /Users/gavin/.bun/bin/opencode
+lrwxrwxrwx@ 1 gavin  staff  55  2 12 10:55 /Users/gavin/.bun/bin/opencode -> ../install/global/node_modules/opencode-ai/bin/opencode
 ```
-
-**你的实际验证结果**（Windows）：
+第一列的第一个字符是 l，表示这是一个符号链接（symbolic link）。
+它并不是一个普通文件，而是一个“指向另一条路径的引用”。箭头后面的路径是一个相对路径, 其中的 .. 表示上一级目录，结合当前目录是：`/Users/gavin/.bun/bin/`, 因此最终解析后的绝对路径是：
 ```bash
--rwxr-xr-x 1 Administrator 197121 417  Feb 11 22:33 /c/Users/Administrator/AppData/Roaming/npm/opencode*
+/Users/gavin/.bun/install/global/node_modules/opencode-ai/bin/opencode
 ```
+这才是真正被加载执行的文件。
 
-这个 417 字节的文件实际上是一个 **Shell 脚本包装器**，内容如下：
+我们可以通过下面的命令再次验证符号关系：
 
 ```bash
-#!/bin/sh
-basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")
-
-case `uname` in
-    *CYGWIN*|*MINGW*|*MSYS*)
-        if command -v cygpath > /dev/null 2>&1; then
-            basedir=`cygpath -w "$basedir"`
-        fi
-    ;;
-esac
-
-if [ -x "$basedir/node" ]; then
-  exec "$basedir/node"  "$basedir/node_modules/opencode-ai/bin/opencode" "$@"
-else 
-  exec node  "$basedir/node_modules/opencode-ai/bin/opencode" "$@"
-fi
+$ readlink /Users/gavin/.bun/bin/opencode
+../install/global/node_modules/opencode-ai/bin/opencode
 ```
 
-**脚本解析：**
-- 第 1 行：`#!/bin/sh` - 指定用 Shell 执行
-- 第 2 行：获取脚本所在目录，处理了 Windows 路径分隔符
-- 第 3-11 行：检测是否在 Cygwin/MinGW/MSYS 环境下，转换路径格式
-- 第 12-15 行：优先使用脚本同目录下的 `node`，否则使用系统 `node`
-- 第 16 行：最终执行真正的入口脚本
+符号链接类似于 Windows 的快捷方式或 macOS 的别名。它是一个指向另一个文件的特殊文件。当 shell 执行该路径时，内核在加载阶段会解析链接并访问最终目标文件。
+这种设计确保了"安装位置"与"实际位置"的解耦。包管理器保持目标路径稳定，替换该路径下的内容，而符号链接保持不变。
 
-**为什么会有这种差异？**
-- Windows 对符号链接的支持较弱（需要管理员权限）
-- npm 选择使用 Shell 脚本来保证跨平台兼容性
-- Git Bash 可以执行这些脚本，所以用户体验一致
+当你运行 `bun update opencode-ai` 时：
+1. bun 更新 `node_modules/opencode/` 中的文件
+2. 符号链接指向的路径不变
+3. 下次运行 `opencode` 时自动使用新版本
 
-### 统一的行为
+这也是现代包管理器实现全局命令机制的通用设计：用一个稳定的入口路径，指向可被替换的版本目录。
 
-无论哪种实现方式，最终都会调用 `node_modules/opencode-ai/bin/opencode`：
+那么总结下，当你运行 bun install -g <package>时，会将包安装到全局目录，如 ~/.bun/install/global/node_modules/<package>, 并在 ~/.bun/bin/ 创建一个符号链接，指向该包的可执行文件。当我们执行 `opencode` 时，shell 会按照 PATH 环境变量的顺序查找，最终找到 `/Users/gavin/.bun/bin/opencode` 这个符号链接，内核会解析它并加载执行 `../install/global/node_modules/opencode-ai/bin/opencode` 这个文件。
 
+但这引出了下一个问题：包管理器是怎么知道要创建 opencode 这个命令名的？
+
+答案在 `package.json` 中。当用户执行 `bun add -g opencode-ai` 时，opencode-ai 包会被安装到全局目录, 此时bun会解析包内的package.json 文件，并读取其中的 bin 字段:
+
+```json
+// packages/opencode/package.json
+{
+  "name": "opencode",
+  "bin": {
+    "opencode": "./bin/opencode"
+  }
+}
 ```
-npm 安装
-    ↓
-创建可执行文件
-    ↓
-macOS: 符号链接 → ../lib/node_modules/opencode/bin/opencode
-Windows: 脚本 exec → node_modules/opencode-ai/bin/opencode
-    ↓
-最终都执行同一个文件
-```
+这个配置告诉bun："当用户安装这个包时，请创建一个名为 `opencode` 的命令，指向 `./bin/opencode` 文件,也就是上一节我们提到的符号链接：`~/.bun/bin/opencode` , 该链接直接指向该包的实际安装目录：`~/.bun/install/global/node_modules/opencode-ai`。
 
-### 2.1.3 实验：验证这个机制
+### 2.1.2 实验：验证这个机制
 
 让我们创建一个最简单的可执行包来验证这个机制：
 
@@ -168,84 +151,62 @@ hello
 
 **现在你理解了第一个关键机制：`package.json` 的 `bin` 字段让普通文件变成了全局命令。**
 
-但这引出了下一个问题：`bin/hello` 文件的第一行 `#!/usr/bin/env node` 是什么意思？
+现在我们深入这个可执行文件 `bin/opencode`，看看到底写了什么。
 
-## 2.2 第二站：Shebang - 让文本文件变成可执行程序
-
-### 2.2.1 问题：bin/opencode 到底是什么？
+## 2.2 Shebang - 让文本文件变成可执行程序
 
 现在我们知道符号链接指向了 `bin/opencode`，让我们看看这个文件的内容：
 
 ```bash
-$ cat node_modules/opencode/bin/opencode
+$ cat ~/.bun/bin/opencode
 #!/usr/bin/env node
 
 const childProcess = require("child_process")
 const fs = require("fs")
+const path = require("path")
+const os = require("os")
+
 // ... 更多代码
+function run(target) {}
 ```
-
-**发现 3：** 第一行是 `#!/usr/bin/env node`
-
-这看起来很奇怪 - 这是一个 JavaScript 文件，但第一行却不是有效的 JavaScript 语法。那么它是如何工作的？
-
-### 2.2.2 Shebang：Unix 的魔法标记
+这看起来很奇怪，opencode是一个文本文件， 第一行 `#!/usr/bin/env node` 不是有效的 JavaScript 语法，但文件中包含的是 JavaScript 代码。那么它是如何工作的？
 
 `#!/usr/bin/env node` 被称为 **Shebang**（也叫 Hashbang），它是 Unix/Linux 系统的一个特殊机制。
 
-**Shebang 的工作原理：**
+#### 什么是 Shebang？
+当我们在终端尝试执行一个文本文件时，操作系统的内核（Kernel）不仅仅是把它当作文本读取，它会首先检查文件头部的前两个字节。如果这两个字节是 0x23 和 0x21，也就是字符 # 和 !，内核就会意识到：“嘿，这不是普通的文本，这是一个需要解释器来执行的脚本。”
 
-当操作系统执行一个文本文件时，会检查第一行是否以 `#!` 开头：
-- 如果是，就用 `#!` 后面指定的程序来执行这个文件
-- 如果不是，就尝试用默认的 shell 执行
-
-```
-用户执行: ./bin/opencode
-    ↓
-操作系统读取第一行: #!/usr/bin/env node
-    ↓
-操作系统执行: /usr/bin/env node ./bin/opencode
-    ↓
-env 在 PATH 中查找 node
-    ↓
-node 执行这个文件
-```
+这两个字符组合 #! 被读作 Shebang（由 Sharp 和 Bang 组合而成）。紧随其后的字符串，则是内核需要调用的解释器路径。
 
 **为什么叫 Shebang？**
 - `#` 读作 "sharp" 或 "hash"
 - `!` 读作 "bang"
 - 合起来就是 "shebang"
 
-### 2.2.3 为什么用 `/usr/bin/env node` 而不是 `/usr/local/bin/node`？
+### 2.2.3 寻找解释器：为什么是 /usr/bin/env
 
+既然知道了 Shebang 的作用，通过它指定 Node.js 为解释器似乎顺理成章。直觉告诉我们，可以这样写：
+
+```bash
+#!/usr/local/bin/node
+```
 这是一个关键的设计决策。让我们对比两种写法：
 
 **方案 A：硬编码路径**
 ```bash
 #!/usr/local/bin/node
 ```
-
-❌ **问题：**
-- 不同系统的 Node.js 安装路径不同
+不同系统的 Node.js 安装路径不同
 - macOS 可能在 `/usr/local/bin/node`
 - Linux 可能在 `/usr/bin/node`
 - 用户可能用 nvm 安装在 `~/.nvm/versions/node/...`
 
-**方案 B：使用 env（OpenCode 的选择）**
+**方案 B：使用 env **
 ```bash
 #!/usr/bin/env node
 ```
+env 会在 PATH 环境变量中查找 bun，无论用户是如何安装 Bun （Homebrew, npm, 官方脚本），只要配置了 PATH 都能找到。OpenCode 选择了更加灵活的方案B，因为 CLI 工具需要在各种环境中运行。
 
-✅ **优点：**
-- `env` 会在 `PATH` 环境变量中查找 `node`
-- 无论 Node.js 安装在哪里，只要在 PATH 中就能找到
-- 支持用户自定义的 Node.js 版本管理工具
-
-**这是一个"灵活性 vs 确定性"的权衡：**
-- 硬编码路径：确定性高，但灵活性差
-- 使用 env：灵活性高，但依赖 PATH 配置
-
-OpenCode 选择灵活性，因为 CLI 工具需要在各种环境中运行。
 
 ### 2.2.4 实验：理解 Shebang 的作用
 
