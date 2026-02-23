@@ -246,16 +246,28 @@ chmod +x with-shebang.js
 
 当我们执行 `npm install -g opencode` 时，npm 会读取 `package.json` 中的 `bin` 字段。在 macOS 或 Linux 上，系统内核能够直接识别并执行带有 Shebang 的脚本；但在 Windows 上，npm 会采取一种**“包装器（Wrapper）”**策略——它会额外生成一个名为 `opencode.cmd` 的批处理文件。
 
-这个 `.cmd` 文件本质上是一个“启动包装器”，它的核心逻辑非常简单，用伪代码来理解就是：
+这个 `.cmd` 文件本质上是一个"启动包装器"，npm 使用 [cmd-shim](https://github.com/npm/cmd-shim) 包生成实际的批处理脚本，其内容如下：
 
 ```cmd
-// 1. 定位并调用环境中的 node.exe
-// 2. 将真正的 JS 入口文件路径传递给 node
-// 3. 将用户输入的命令行参数 (%*) 原样透传
-node "%~dp0\node_modules\opencode\bin\opencode" %*
+@IF EXIST "%~dp0\node.exe" (
+  "%~dp0\node.exe" "%~dp0\node_modules\opencode\bin\opencode" %*
+) ELSE (
+  @SETLOCAL
+  @SET PATHEXT=%PATHEXT:;.JS;=%
+  node "%~dp0\node_modules\opencode\bin\opencode" %*
+)
 ```
 
-这是一种非常典型的桥接设计。从用户的视角来看，他们执行的是 `opencode --version` 这个“可执行程序”；但从操作系统的视角来看，这其实是一条完整的调用链：
+**关键语法解析：**
+
+| 语法 | 含义 |
+|------|------|
+| `%~dp0` | 批处理文件所在的目录（d=驱动器，p=路径） |
+| `%*` | 所有命令行参数的透传 |
+| `PATHEXT` | 移除 `.JS` 扩展名，防止 `node` 被解析为 `node.js` |
+| `@IF EXIST` | 检查同目录是否存在 `node.exe` |
+
+从用户的视角来看，他们执行的是 `opencode --version` 这个"可执行程序"；但从操作系统的视角来看，这其实是一条完整的调用链：
 
 `opencode.cmd (Windows包装器) -> Node 解释器 -> bin/opencode -> 业务逻辑`
 
