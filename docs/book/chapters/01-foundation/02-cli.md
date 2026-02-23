@@ -12,14 +12,9 @@ $ bun add -g opencode-ai
 
 ```bash
 bun add -g opencode-ai
-
 bun add v1.3.9 (cf6cdbbb)
-
 installed opencode-ai@1.1.59 with binaries:
-
 - opencode
-
-[25.00ms] done
 ```
 接着大多数人会输入：
 
@@ -29,7 +24,7 @@ $ opencode --version
 ```
 这行简单的命令，背后发生了什么？
 
-在本章中，我们将追踪这条命令的完整生命周期，详细解读从用户按下回车的那一刻，到屏幕上显示版本号其背后的技术细节。更重要的是，你会理解**为什么**要这样设计，以及在构建自己的 CLI 工具时如何做出正确的决策。
+在本章中，我们将追踪这条命令的完整生命周期，详细解读从用户按下回车的那一刻，到屏幕上显示版本号其背后的技术细节。更重要的是，你会理解为什么要这样设计，以及在构建自己的 CLI 工具时如何做出正确的决策。
 
 ## 2.1 操作系统如何找到 opencode？
 
@@ -241,90 +236,88 @@ chmod +x with-shebang.js
 
 **关键洞察：Shebang 让文本文件变成了可执行程序。**
 
-### 2.2.5 Windows 的特殊情况
+### 2.2.5 跨平台执行的真相：环境差异的抹平
 
-你可能会问：Windows 不支持 Shebang，那怎么办？
+在上一节中，我们了解了 Shebang (`#!/usr/bin/env node`) 的作用。但此时，你脑海中可能会浮现出一个疑问：
 
-**答案：包管理器会自动处理。**
+> “Windows 操作系统根本不认识 Shebang 这种 Unix 规范，那 CLI 工具的跨平台执行究竟是如何成立的？”
 
-当你在 Windows 上执行 `npm install -g opencode` 时，npm 会：
-1. 读取 `package.json` 的 `bin` 字段
-2. 创建 `opencode.cmd` 包装文件：
-   ```cmd
-   @ECHO off
-   SETLOCAL
-   CALL :find_dp0
+实际上，答案并不是 Windows 突然提供了对 Shebang 的支持，而是 Node.js 生态在**安装阶段（Install Phase）**替我们补齐了这一层缺失。
 
-   IF EXIST "%dp0%\node.exe" (
-     SET "_prog=%dp0%\node.exe"
-   ) ELSE (
-     SET "_prog=node"
-   )
+当我们执行 `npm install -g opencode` 时，npm 会读取 `package.json` 中的 `bin` 字段。在 macOS 或 Linux 上，系统内核能够直接识别并执行带有 Shebang 的脚本；但在 Windows 上，npm 会采取一种**“包装器（Wrapper）”**策略——它会额外生成一个名为 `opencode.cmd` 的批处理文件。
 
-   "%_prog%" "%dp0%\node_modules\opencode\bin\opencode" %*
-   ```
-3. 这个 `.cmd` 文件会自动调用 Node.js 执行真正的脚本
+这个 `.cmd` 文件本质上是一个“启动包装器”，它的核心逻辑非常简单，用伪代码来理解就是：
 
-**所以 OpenCode 的跨平台策略是：**
-- Unix/Linux/macOS：依赖 Shebang
-- Windows：依赖包管理器生成的 `.cmd` 包装文件
-
-**现在你理解了第二个关键机制：Shebang 让脚本文件可以像编译后的二进制程序一样直接执行。**
-
-但这引出了下一个问题：OpenCode 的 `bin/opencode` 不是直接执行业务逻辑，而是一个"启动器"，为什么需要这一层？
-
-## 2.3 第三站：启动器模式 - 为什么需要一个"中间人"？
-
-### 2.3.1 问题：为什么不直接执行 src/index.ts？
-
-你可能会想：既然有了 Shebang，为什么不直接这样写？
-
-```typescript
-#!/usr/bin/env bun
-// src/index.ts
-console.log("OpenCode version 1.0.0")
+```cmd
+// 1. 定位并调用环境中的 node.exe
+// 2. 将真正的 JS 入口文件路径传递给 node
+// 3. 将用户输入的命令行参数 (%*) 原样透传
+node "%~dp0\node_modules\opencode\bin\opencode" %*
 ```
 
-然后在 `package.json` 中：
+这是一种非常典型的桥接设计。从用户的视角来看，他们执行的是 `opencode --version` 这个“可执行程序”；但从操作系统的视角来看，这其实是一条完整的调用链：
+
+`opencode.cmd (Windows包装器) -> Node 解释器 -> bin/opencode -> 业务逻辑`
+
+也就是说，跨平台的关键并不是“写一份代码到处运行”，而是**在安装阶段，为不同的操作系统生成相应的入口桥接层**。Shebang 解决了 Unix 环境下的“如何被执行”问题，而 `.cmd` 包装器则解决了 Windows 下的同类问题。
+
+## 2.3 启动器模式（Launcher Pattern）：为什么我们需要一个“中间人”？
+
+既然操作系统的差异已经被 npm 提供的包装器抹平，且无论哪种平台，最终都会将执行权交还给我们在 `bin` 字段中定义的入口文件（例如 `bin/opencode`）。那么我们自然会产生一个直觉上的想法：**为什么不直接把所有的业务代码写在这个入口文件里呢？**
+
+或者，在使用了 TypeScript 或 Bun 等现代工具栈后，我们可能会顺理成章地写出这样的配置：
+
 ```json
+// package.json
 {
   "bin": {
     "opencode": "./src/index.ts"
   }
 }
-```
-
-**这个方案的问题：**
-
-1. **平台差异：**
-   - macOS Apple Silicon 需要 `opencode-darwin-arm64` 二进制文件
-   - Linux x64 需要 `opencode-linux-x64` 二进制文件
-   - Windows 需要 `opencode-windows-x64.exe`
-   - 如何在运行时选择正确的二进制文件？
-
-2. **性能考虑：**
-   - TypeScript 需要即时编译，启动慢
-   - 预编译的二进制文件启动快（Bun 的优势）
-   - 但不同平台需要不同的二进制文件
-
-3. **灵活性需求：**
-   - 开发时可能想用本地构建的版本
-   - 测试时可能想用特定版本
-   - 如何支持环境变量覆盖？
-
-**OpenCode 的解决方案：启动器模式（Launcher Pattern）**
 
 ```
-bin/opencode (启动器)
-    ↓
-检测平台和架构
-    ↓
-查找对应的二进制文件
-    ↓
-执行真正的 opencode 程序
+
+```typescript
+#!/usr/bin/env bun
+// src/index.ts
+console.log("OpenCode version 1.0.0");
+// ... 大量复杂的业务逻辑
+
 ```
 
-### 2.3.2 启动器的完整实现
+这种方案看起来非常直观：直接将源码作为入口，既不需要多余的文件，也不需要复杂的目录结构。
+
+**但这里存在几个致命的问题。**
+
+首先是**平台架构的差异**。随着 CLI 工具的演进，为了追求极致的启动性能，我们通常会使用 Bun 或 pkg 将代码预编译为特定平台的二进制文件。这就意味着，对于 macOS (Apple Silicon) 我们需要分发 `opencode-darwin-arm64`，而对于 Windows 则需要分发 `opencode-windows-x64.exe`。如果我们直接把入口指向某一个具体的业务文件，系统在运行时要如何动态地选择正确的二进制产物呢？
+
+其次是**运行时的性能负担**。如果像上面的代码那样直接执行 `.ts` 源码，运行时就需要进行即时编译（JIT）或转译操作。这对于强调“秒级响应”的 CLI 工具来说，带来了不可忽视的性能损耗。
+
+为了解决这些问题，我们需要改变思路。既然 npm 可以用一个 `.cmd` 文件作为 Windows 的“系统级包装器”，我们为什么不为 CLI 程序设计一个**“应用级包装器”**呢？
+
+这就是所谓的**启动器模式（Launcher Pattern）**。
+
+在启动器模式下，`bin/opencode` 不再承担任何实际的业务逻辑，它的职责发生了转变，变成了一个纯粹的**“中间人”**或者说是**“路由器”**。
+
+```javascript
+#!/usr/bin/env node
+// bin/opencode (启动器)
+
+// 1. 检查当前运行时的操作系统和架构 (os.platform, os.arch)
+// 2. 处理 ESM / CJS 的兼容性兜底
+// 3. 拦截并处理一些致命的运行时异常
+// 4. 动态组装路径，查找并调用真正对应的二进制产物或入口文件
+
+```
+
+通过引入这样一个启动器层，我们将“如何启动”和“做什么业务”彻底解耦。
+
+* **对于开发阶段**：启动器可以根据环境变量动态指向本地构建的 `dist/index.js`。
+* **对于生产阶段**：启动器能够精准地将任务派发给针对当前系统优化过的二进制产物。
+
+这也完美契合了软件工程中的第一性原理：当一个问题因为耦合过深而难以解决时，就引入一个中间层。npm 引入了 `.cmd` 抹平了系统差异，而 CLI 架构则引入了启动器（Launcher）抹平了底层环境与业务产物之间的差异。
+
+### 2.3.1 启动器的完整实现
 
 让我们逐段分析 `bin/opencode` 的代码：
 
@@ -380,7 +373,7 @@ function run(target) {
    - 正确传递子进程的退出码
    - 这对 CI/CD 脚本很重要（非零退出码表示失败）
 
-### 2.3.3 优先级 1：环境变量覆盖
+### 2.3.2 优先级 1：环境变量覆盖
 
 ```javascript
 const envPath = process.env.OPENCODE_BIN_PATH
@@ -398,6 +391,28 @@ if (envPath) {
 
 **这是 Unix 哲学的体现：环境变量是配置的最高优先级。**
 
+### 2.3.3 缓存机制：快速路径优化
+
+在环境变量检查之后，启动器还会检查是否存在缓存的二进制文件：
+
+```javascript
+const scriptPath = fs.realpathSync(__filename)
+const scriptDir = path.dirname(scriptPath)
+
+const cached = path.join(scriptDir, ".opencode")
+if (fs.existsSync(cached)) {
+  run(cached)
+}
+```
+
+**为什么需要缓存机制？**
+
+1. **性能优化：** 如果二进制文件已经被解压到 `.opencode` 缓存位置，直接执行，跳过后续复杂的查找逻辑
+2. **首次运行后的加速：** 某些安装方式会将二进制文件预先解压到这个位置
+3. **开发便利：** 本地开发时可以手动放置二进制文件进行测试
+
+**`fs.realpathSync` 的作用：** 解析符号链接，获取脚本的真实路径。这确保即使启动器通过符号链接调用，也能正确定位脚本所在目录。
+
 ### 2.3.4 平台检测：找到正确的二进制文件
 
 ```javascript
@@ -414,13 +429,12 @@ const archMap = {
 
 let platform = platformMap[os.platform()]
 if (!platform) {
-  platform = os.platform()  // 回退到原始值
+  platform = os.platform()
 }
 let arch = archMap[os.arch()]
 if (!arch) {
-  arch = os.arch()  // 回退到原始值
+  arch = os.arch()
 }
-
 const base = "opencode-" + platform + "-" + arch
 const binary = platform === "windows" ? "opencode.exe" : "opencode"
 ```
@@ -446,7 +460,162 @@ const binary = platform === "windows" ? "opencode.exe" : "opencode"
    - npm/bun 可以根据平台只下载对应的包（可选依赖）
    - 便于 CI/CD 构建和分发
 
-### 2.3.5 向上递归查找：解决 Monorepo 问题
+### 2.3.5 AVX2 检测：CPU 指令集优化
+
+对于 x64 架构，启动器会检测 CPU 是否支持 AVX2 指令集，以决定使用哪个版本的二进制文件：
+
+```javascript
+function supportsAvx2() {
+  if (arch !== "x64") return false
+
+  if (platform === "linux") {
+    try {
+      return /(^|\s)avx2(\s|$)/i.test(fs.readFileSync("/proc/cpuinfo", "utf8"))
+    } catch {
+      return false
+    }
+  }
+
+  if (platform === "darwin") {
+    try {
+      const result = childProcess.spawnSync("sysctl", ["-n", "hw.optional.avx2_0"], {
+        encoding: "utf8",
+        timeout: 1500,
+      })
+      if (result.status !== 0) return false
+      return (result.stdout || "").trim() === "1"
+    } catch {
+      return false
+    }
+  }
+
+  if (platform === "windows") {
+    const cmd =
+      '(Add-Type -MemberDefinition "[DllImport(""kernel32.dll"")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)'
+
+    for (const exe of ["powershell.exe", "pwsh.exe", "pwsh", "powershell"]) {
+      try {
+        const result = childProcess.spawnSync(exe, ["-NoProfile", "-NonInteractive", "-Command", cmd], {
+          encoding: "utf8",
+          timeout: 3000,
+          windowsHide: true,
+        })
+        if (result.status !== 0) continue
+        const out = (result.stdout || "").trim().toLowerCase()
+        if (out === "true" || out === "1") return true
+        if (out === "false" || out === "0") return false
+      } catch {
+        continue
+      }
+    }
+    return false
+  }
+
+  return false
+}
+```
+
+**为什么需要 AVX2 检测？**
+
+1. **性能差异：** AVX2 是高级向量扩展指令集，支持它的 CPU 可以运行优化版本的二进制文件，性能更好
+2. **兼容性：** 不支持 AVX2 的老旧 CPU 需要使用 `baseline` 版本，否则程序会崩溃
+3. **跨平台检测：** 不同操作系统检测方式不同：
+   - **Linux：** 解析 `/proc/cpuinfo` 文件中的 flags
+   - **macOS：** 调用 `sysctl` 命令查询 `hw.optional.avx2_0`
+   - **Windows：** 通过 PowerShell 调用 Windows API `IsProcessorFeaturePresent(40)`
+
+**Windows 检测的特殊处理：** 尝试多种 PowerShell 可执行文件名称（`powershell.exe`、`pwsh.exe`、`pwsh`、`powershell`），以适应不同 Windows 版本和 PowerShell 安装情况。
+
+### 2.3.6 musl 检测：Alpine Linux 兼容性
+
+对于 Linux 平台，启动器还会检测是否使用 musl libc（如 Alpine Linux）：
+
+```javascript
+const musl = (() => {
+  try {
+    if (fs.existsSync("/etc/alpine-release")) return true
+  } catch {
+    // ignore
+  }
+
+  try {
+    const result = childProcess.spawnSync("ldd", ["--version"], { encoding: "utf8" })
+    const text = ((result.stdout || "") + (result.stderr || "")).toLowerCase()
+    if (text.includes("musl")) return true
+  } catch {
+    // ignore
+  }
+
+  return false
+})()
+```
+
+**为什么需要 musl 检测？**
+
+1. **libc 差异：** Linux 发行版使用两种主要的 C 标准库：
+   - **glibc：** 大多数发行版（Ubuntu、Debian、CentOS 等）
+   - **musl：** Alpine Linux 等轻量级发行版
+
+2. **二进制不兼容：** 针对 glibc 编译的二进制文件无法在 musl 系统上运行，反之亦然
+
+3. **检测策略：**
+   - 首先检查 `/etc/alpine-release` 文件是否存在（Alpine 的特征文件）
+   - 其次通过 `ldd --version` 输出判断是否包含 "musl" 字样
+
+### 2.3.7 候选名称优先级：智能匹配策略
+
+基于 AVX2 和 musl 检测结果，启动器会生成多个候选包名，按优先级排序：
+
+```javascript
+const names = (() => {
+  const avx2 = supportsAvx2()
+  const baseline = arch === "x64" && !avx2
+
+  if (platform === "linux") {
+    const musl = /* ... musl 检测逻辑 ... */
+
+    if (musl) {
+      if (arch === "x64") {
+        if (baseline) return [`${base}-baseline-musl`, `${base}-musl`, `${base}-baseline`, base]
+        return [`${base}-musl`, `${base}-baseline-musl`, base, `${base}-baseline`]
+      }
+      return [`${base}-musl`, base]
+    }
+
+    if (arch === "x64") {
+      if (baseline) return [`${base}-baseline`, base, `${base}-baseline-musl`, `${base}-musl`]
+      return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]
+    }
+    return [base, `${base}-musl`]
+  }
+
+  if (arch === "x64") {
+    if (baseline) return [`${base}-baseline`, base]
+    return [base, `${base}-baseline`]
+  }
+  return [base]
+})()
+```
+
+**候选名称示例：**
+
+| 平台 | 架构 | AVX2 | musl | 候选名称列表 |
+|------|------|------|------|-------------|
+| Linux | x64 | ✅ | ❌ | `["opencode-linux-x64", "opencode-linux-x64-baseline", "opencode-linux-x64-musl", "opencode-linux-x64-baseline-musl"]` |
+| Linux | x64 | ❌ | ❌ | `["opencode-linux-x64-baseline", "opencode-linux-x64", ...]` |
+| Linux | x64 | ✅ | ✅ | `["opencode-linux-x64-musl", "opencode-linux-x64-baseline-musl", ...]` |
+| Linux | arm64 | - | ✅ | `["opencode-linux-arm64-musl", "opencode-linux-arm64"]` |
+| macOS | x64 | ✅ | - | `["opencode-darwin-x64", "opencode-darwin-x64-baseline"]` |
+| macOS | arm64 | - | - | `["opencode-darwin-arm64"]` |
+
+**设计洞察：** 优先级列表确保：
+1. 优先使用最匹配的二进制文件（AVX2 优化版或 musl 版）
+2. 如果最优选择不存在，回退到兼容版本
+3. 最大化兼容性，减少"找不到二进制文件"的错误
+
+### 2.3.8 向上递归查找：解决 Monorepo 问题
+
+实际的 `findBinary` 函数使用预定义的 `names` 数组进行查找：
 
 ```javascript
 function findBinary(startDir) {
@@ -454,20 +623,14 @@ function findBinary(startDir) {
   for (;;) {
     const modules = path.join(current, "node_modules")
     if (fs.existsSync(modules)) {
-      const entries = fs.readdirSync(modules)
-      for (const entry of entries) {
-        if (!entry.startsWith(base)) {
-          continue
-        }
-        const candidate = path.join(modules, entry, "bin", binary)
-        if (fs.existsSync(candidate)) {
-          return candidate
-        }
+      for (const name of names) {
+        const candidate = path.join(modules, name, "bin", binary)
+        if (fs.existsSync(candidate)) return candidate
       }
     }
     const parent = path.dirname(current)
     if (parent === current) {
-      return  // 到达文件系统根目录
+      return
     }
     current = parent
   }
@@ -498,22 +661,22 @@ function findBinary(startDir) {
 **算法分析：**
 1. 从当前目录开始
 2. 检查 `node_modules` 是否存在
-3. 遍历所有以 `opencode-{platform}-{arch}` 开头的包
+3. 按优先级遍历 `names` 数组中的候选包名
 4. 检查 `bin/opencode` 或 `bin/opencode.exe` 是否存在
 5. 如果找不到，向上一级目录继续查找
 6. 直到找到或到达文件系统根目录
 
-**时间复杂度：** O(d × n)，其中 d 是目录深度，n 是 node_modules 中的包数量
+**时间复杂度：** O(d × m)，其中 d 是目录深度，m 是候选名称数量（通常 1-4 个）
 
-### 2.3.6 错误处理：用户友好的提示
+### 2.3.9 错误处理：用户友好的提示
 
 ```javascript
 const resolved = findBinary(scriptDir)
 if (!resolved) {
   console.error(
-    'It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing the "' +
-      base +
-      '" package',
+    "It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing " +
+      names.map((n) => `\"${n}\"`).join(" or ") +
+      " package",
   )
   process.exit(1)
 }
@@ -525,7 +688,7 @@ run(resolved)
 
 1. **说明问题：** "package manager failed to install"
 2. **给出原因：** "for your platform"
-3. **提供解决方案：** "manually installing the ... package"
+3. **提供解决方案：** 列出所有可能的候选包名，用户可以选择安装
 
 **对比糟糕的错误信息：**
 ```javascript
@@ -534,11 +697,11 @@ console.error("Binary not found")
 
 // ✅ 好的错误信息（OpenCode 的做法）
 console.error(
-  'It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing the "opencode-darwin-arm64" package'
+  'It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing "opencode-linux-x64" or "opencode-linux-x64-baseline" package'
 )
 ```
 
-### 2.3.7 完整流程图
+### 2.3.10 完整流程图
 
 现在我们可以画出 `opencode --version` 的完整执行流程：
 
@@ -557,25 +720,33 @@ Node.js 执行启动器脚本
     ├─ 是 → 直接执行指定路径
     └─ 否 → 继续
         ↓
-    检测平台和架构 (darwin + arm64)
-        ↓
-    构造包名: opencode-darwin-arm64
-        ↓
-    向上查找 node_modules
-        ↓
-    找到二进制文件: node_modules/opencode-darwin-arm64/bin/opencode
-        ↓
-    使用 spawnSync 执行
-        ↓
-    传递参数: ["--version"]
-        ↓
-    继承 stdio (用户看到输出)
-        ↓
-    等待执行完成
-        ↓
-    传递退出码
-        ↓
-    用户看到: opencode version 1.1.39
+    检查缓存文件 .opencode 是否存在?
+        ├─ 是 → 直接执行缓存
+        └─ 否 → 继续
+            ↓
+        检测平台和架构 (如: darwin + arm64)
+            ↓
+        x64 架构? 检测 AVX2 指令集支持
+            ↓
+        Linux 平台? 检测 musl libc
+            ↓
+        生成候选包名列表 (按优先级排序)
+            ↓
+        向上查找 node_modules
+            ↓
+        找到二进制文件: node_modules/opencode-darwin-arm64/bin/opencode
+            ↓
+        使用 spawnSync 执行
+            ↓
+        传递参数: ["--version"]
+            ↓
+        继承 stdio (用户看到输出)
+            ↓
+        等待执行完成
+            ↓
+        传递退出码
+            ↓
+        用户看到: opencode version 1.1.39
 ```
 
 **现在你理解了第三个关键机制：启动器模式通过一个轻量级的 Node.js 脚本，实现了跨平台的二进制文件分发和执行。**
@@ -586,7 +757,7 @@ Node.js 执行启动器脚本
 
 现在让我们看看另一种截然不同的策略。当你使用 Bun 安装 opencode 时，会发生什么？
 
-### 2.3.8 Bun 安装的实际验证
+### 2.3.12 Bun 安装的实际验证
 
 在 Windows + Git Bash 环境中执行：
 
@@ -607,7 +778,7 @@ $ ls -la /c/Users/Administrator/.bun/bin/opencode
 | **实际内容** | Node.js 启动器脚本 | Windows PE 可执行文件 |
 | **是否需要 Node.js** | 是 | 否 |
 
-### 2.3.9 为什么 Bun 不需要启动器？
+### 2.3.13 为什么 Bun 不需要启动器？
 
 Bun 采用了一种更现代化的分发策略：
 
