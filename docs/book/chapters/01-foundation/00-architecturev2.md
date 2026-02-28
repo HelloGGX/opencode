@@ -1,58 +1,25 @@
-# 1.0 全景架构与设计哲学
+# 1.0 设计哲学
 
-当我们准备从零开始编写一个 AI 编码助手（OpenCode）时，第一行代码该写什么？
+当我们准备从零开始编写一个 AI 编码助手时，我们第一步该做什么？
 
-在动手之前，我们需要先确定它的宿主形态。直觉告诉我们，开发者在 IDE 里写代码，所以做个 VS Code 插件是理所当然的。现有的主流产品（如 Cursor 或 GitHub Copilot）大多也是这么做的。
+在动手之前，我们需要先确定它的宿主形态。直觉告诉我们，开发者在 IDE 里写代码，所以将 AI 集成进 IDE 是理所当然的选择。现有的主流产品（如 Cursor 或 GitHub Copilot）大多也是这么做的。但还有另外一种宿主形态占据了相当大的市场份额——— CLI Agent。为什么会存在 CLI Agent 这种宿主形态呢？我们可以拿市面上两款主流产品来对比：Cursor 和 Claude Code。
 
-但如果我们将 Agent（智能体）作为系统的核心，仅仅将其作为一个 IDE 插件，会带来一些工程和场景上的阻碍。我们需要对比一下 IDE 插件形态与 CLI（命令行）形态的差异。
+Claude Code 是 Anthropic 推出的编程智能体（Agent），可在终端、VS Code、JetBrains、桌面端以及 Web 端运行。它凭借对代码库的深入理解，能够自主执行多步骤的任务。Cursor 则是一款以 Agent 为核心重构的 VS Code 衍生编辑器，提供 Tab 键代码补全、多模型对话功能，以及可以直接在 IDE 中编辑文件的 Cursor Agent 模式。如今，两者都支持后台智能体和命令行（CLI）工作流，并且都在深入触及对方的核心领域。
 
-## 1.0.1 宿主形态的抉择：为什么我们需要一个纯粹的 CLI Agent
+两者真正的产品哲学分歧在于“控制权”。Claude Code 是“智能体优先”（Agent-first）：由你描述需求，AI 负责主导执行，最后由你来审查结果。Cursor 则是“IDE 优先”（IDE-first）：由你主导开发，AI 负责提供代码补全、修改建议以及内联编辑，并由你逐一批准确认。
 
-当我们尝试在现有的代码编辑器（如 VS Code）中通过插件引入大型语言模型（LLM），或是使用类似 Cursor 这样基于编辑器改造的工具时，通常会观察到一个现象：面对同样的重构任务，即使底层调用的都是 Claude 3.5 Sonnet 模型接口，IDE 环境下的补全效果，有时会莫名其妙地偏离当前任务，而独立的命令行（CLI）工具（例如 Claude Code）却能精准命中需求。
+相信深度使用过 Cursor 和 Claude Code 的开发者都会有类似感受：面对同样的重构任务，即使底层调用的都是 Claude 3.5 Sonnet 模型接口，在 IDE 中使用与在 CLI 中使用，体验与效果依然存在显著差异。
 
-既然底层模型完全一致，问题出在哪里？为了定位这个问题，我们需要从 Agent 的输入源头——上下文（Context）机制开始看起。
+既然底层模型完全一致，问题出在哪里？这主要源于上下文（context）管理方式的不同。
 
-### 1.1.1 上下文的优劣
-最容易想到的排查方法，是拦截并对比这两种形态向模型 API 发送的实际请求（Payload）。
+Cursor会自动把当前打开的文件、侧边栏信息、终端输出、打开的Tab等IDE状态塞进模型的上下文，虽然你可以手动用@File、@Code、@Folder等指令来指定上下文，但IDE状态往往默认参与，导致Token消耗更高, 模型注意力分散。除此之外，使用Cursor的用户经常反馈在使用 70K 到 120K tokens 时就会达到上限，系统会在后台触发截断与性能保护机制，导致实际可用的上下文被压缩。
+有人做过对比测评，评测内容是：使用 Tailwind 4 和 shadcn 组件构建一个 Next.js 应用。同任务情况下，Cursor 消耗的 Token 数量是 Claude Code 的 5.5 倍。
 
-当我们在一款 IDE 插件中触发一次“修复当前函数逻辑”的请求时，它发送给模型的 JSON 数据往往类似于这样（注意：实际 Payload 因具体插件实现、版本和配置而异，没有统一标准；以下是基于常见实践的示意图，用于阐释概念）：
+而Claude Code这样的CLI 工具的上下文没有任何 UI 状态的负担。它确保了模型能将有限的 Context Window 完全聚焦于代码逻辑本身，尤其适合大量的重构或后台agent任务。
 
-```json
-// IDE 插件发送的 Payload 示例
-{
-  "task": "修复 calculateTotal 函数的精度丢失问题",
-  "context": {
-    "activeFile": "src/utils/math.ts",
-    "cursorPosition": {"line": 42, "column": 15},
-    "openTabs": ["src/components/Cart.tsx", "package.json", "README.md"],
-    "sidebarState": "visible",
-    "recentTerminalOutput": "npm run dev ... compiled successfully"
-  }
-}
-```
-发现问题了吗？IDE 作为开发者的 UI 层，它的职责是维护整个界面的状态, 它需要维护太多跟当前任务无关的上下文。你打开了哪些 Tab、选中了哪些代码、侧边栏展示了什么，这些冗余信息传递给上下文会导致上下文污染，迫使模型的注意力机制（Attention Mechanism）在无关的文件名和界面状态上消耗算力，最终导致推理能力的下降。
+我们再来看看这两种形态在软件工程全生命周期中的差异。
 
-相反，如果我们来看 CLI 工具在执行相同任务时构建的上下文：
-
-```json
-// CLI 工具发送的 Payload 示例
-{
-  "task": "修复 calculateTotal 函数的精度丢失问题",
-  "context": {
-    "cwd": "/path/to/project",
-    "targetFileContent": "...(math.ts content)...",
-    "gitDiff": "..."
-  }
-}
-```
-CLI 工具的上下文没有任何 UI 状态的负担。它严格围绕文件系统和版本控制（Git）的状态进行组织。这种结构确保了模型能将有限的 Context Window 完全聚焦于代码逻辑本身。
-
-### 1.1.2 可移植性
-理解了 CLI 形态在运行时（Runtime）和上下文管理上的优势后，我们再来看看这两种形态在软件工程全生命周期中的差异。
-
-IDE 强绑定于个人的开发机器与特定的可视化界面。但当我们希望将 Agent 的能力规模化时，我们需要它能够在无头环境（Headless Environment）中运行。
-
-由于 CLI 本质上是一个标准的系统命令，它天然具备极佳的可移植性。你可以在本地用 CLI 工具，可以在远程服务器上用，可以在 Docker 容器里用，可以直接集成到 CI/CD 流水线里。Anthropic 官方已经发布了 GitHub Action 和 GitLab CI/CD 集成，你在 PR 里 @claude 就能触发自动 Code Review、自动修复 Bug、甚至自动实现 Issue 里描述的功能。
+IDE 强绑定于个人的开发机器与特定的可视化界面，而 CLI 本质上是一个标准的系统命令，它天然具备极佳的可移植性。你可以在本地用 CLI 工具，可以在远程服务器上用，可以在 Docker 容器里用，可以直接集成到 CI/CD 流水线里。Anthropic 官方已经发布了 GitHub Action 和 GitLab CI/CD 集成，你在 PR 里 @claude 就能触发自动 Code Review、自动修复 Bug、甚至自动实现 Issue 里描述的功能。
 
 CLI 已经从一个“帮你写下一行代码的辅助工具”，转变为一个“可编排的虚拟工程师”。这就解释了为什么当 Agent 的自治能力跨越某个临界点后，IDE 界面反而会退居二线：因为开发者不再需要逐行确认代码，而是转变为类似 Tech Lead 的角色，通过终端指令调度 Agent 完成模块级的任务。
 
@@ -60,11 +27,7 @@ CLI 已经从一个“帮你写下一行代码的辅助工具”，转变为一�
 
 包括 Anthropic 也推出了针对办公场景的 Cowrok，可以满足很多办公需求，甚至于不需要打开办公软件可以生成不错的 PPT。这些都是相同的趋势，人会越来越多的以 Agent 为中心，去指挥 Agent 操作软件，而不是直接打开软件，这个变化正在发生。
 
-### 1.1.3 数据飞轮：自家模型 vs 第三方集成
-
-自家模型加自家工具形成的数据飞轮，可能是 Claude Code 真正的护城河。
-
-Cursor 是一个第三方工具，它接入多种模型，Claude、GPT、Gemini 都可以用。
+从模型调用来看，Cursor 是一个第三方工具，它接入多种模型，Claude、GPT、Gemini 都可以用。
 
 听上去很灵活对吧？但问题是，它要为每一种模型做优化：不同的系统提示词、不同的工具调用方式、不同的擅长领域。
 
@@ -78,14 +41,13 @@ Claude Code 只需要考虑一件事：怎么把 Claude 模型的能力发挥到
 
 Cursor 的商业模式是赚差价：用户付月费，它去调 API，中间的差价就是利润。用户的 Token 用得越少，Cursor 赚得越多。它之前尝试过比较大方的包月方案，很快就扛不住成本了，现在改成包月加超额付费的模式。做 Agent 功能的时候，它就有动力去省 Token，但一省 Token 上下文就可能被截断，效果就打折扣。
 
-这也是为什么同样的模型，Cursor 的表现不一定比得上 Claude Code。
+这也是为什么同样的模型，Cursor 的表现不一定比得上 Claude Code。需要强调的是，我们并不是在批判Cursor有多么的不好，相反，Cursor在特定工作场景中表现出色，比如：自动补全速度、可视化体验、快速修复等。作为工具，它们本来就是为不同的场景而设计的。Reddit用户说得非常贴切：
 
-明白了这些，我们在设计自己的 OpenCode 架构时，就有了明确的方向：我们会优先构建一个坚实的、纯粹的 CLI 核心调度层，所有的多步推理、环境交互和上下文管理都在该层完成。至于未来的 IDE 插件或 Web 界面，它们仅仅是挂载在这个核心层之上的“视图（View）”而已。
+> "Cursor makes you faster at what you already know how to do. It's an accelerator. You're still driving. Claude Code does things for > you. It's a delegator. You assign tasks, they get done."
 
+有了对编码辅助工具的清晰认识，我们就可以在设计自己的Opencode架构时，根据自己的产品定位，去选择合适的运行形态。接下来我们从一个最基础的Agent入手，理解编码辅助Agent的本质原理。
 
 ## 1.0.2 状态机与驱动循环：Agent 的核心骨架
-
-确定了运行形态后，我们来看核心代码应该如何组织。
 
 最简单的 AI 调用是一个异步函数，传入一段文本，等待返回：
 
