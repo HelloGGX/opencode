@@ -1,24 +1,44 @@
 # 第 3 章：最小可用的 CLI
 
-在上一章，我们理解了 `opencode --version` 背后的完整执行链路：PATH 查找、符号链接、Shebang、启动器。现在，是时候亲手实现这个命令了。
+在上一章，我们理清了命令行工具的执行链路。现在我们需要在代码中具体实现它。
 
-本章的目标很朴素：让用户能在终端输入 `opencode --version`，看到版本号输出。
+本章的目标是构建一个最基础的 CLI 程序：当我们在终端输入 `opencode --version` 时，程序能够正确接收该指令，并输出当前的版本号。我们将从最基础的 Node.js/Bun 进程参数解析开始，逐步推导出一个工程化的命令路由方案。
 
-但即使是这样一个看似简单的需求，如果我们模拟真实开发的节奏，也会经历几次迭代。让我们从最直接的方案开始。
+## 3.1 进程参数的传递机制
 
----
+当我们在终端运行一个脚本时，用户输入的命令和参数是如何传递给执行环境的？无论是 Node.js 还是 Bun，都会将这些运行时参数收集在 `process.argv` 这个全局数组中。
 
-## 3.1 迭代一：单文件 CLI
-
-### 3.1.1 最直接的方案
-
-在第 1 章，我们已经搭建了 Monorepo 环境。现在，让我们在 `packages/opencode/src/index.ts` 中写下第一行代码。
-
-最直接的方案是什么？解析 `process.argv`，检查是否包含 `--version`。
+为了直观地观察它的内部结构，我们在 `packages/opencode/src/index.ts` 中编写第一段代码，将其打印出来：
 
 ```typescript
 // packages/opencode/src/index.ts
+console.log(process.argv)
 
+```
+
+在终端中执行该文件，并附带一个 `--version` 参数：
+
+```bash
+bun run packages/opencode/src/index.ts --version
+```
+
+观察终端输出的结果：
+
+```bash
+[
+  "/usr/local/bin/node",                                   // 索引 0: 运行时可执行文件的绝对路径
+  "/Users/xxx/opencode/packages/opencode/src/index.ts",    // 索引 1: 当前执行脚本的绝对路径
+  "--version"                                              // 索引 2: 用户实际传入的参数
+]
+
+```
+
+从输出结果可以看出，`process.argv` 的前两个元素固定为底层运行时的路径和目标脚本的路径。用户真正输入的业务参数，永远从索引 `2` 开始。
+
+明确了这一点，我们就可以通过截取数组来获取有效参数，并进行最基本的条件判断：
+
+```typescript
+// packages/opencode/src/index.ts
 const args = process.argv.slice(2)
 
 if (args.includes("--version") || args.includes("-v")) {
@@ -26,55 +46,18 @@ if (args.includes("--version") || args.includes("-v")) {
 } else {
   console.log("Unknown command")
 }
-```
-
-这就是全部代码，只有 8 行。让我们运行它：
-
-```bash
-bun run packages/opencode/src/index.ts --version
-```
-
-输出：
 
 ```
-1.0.0
-```
 
-成功了。但如果你尝试运行：
+再次运行上述 `bun run` 命令，终端会正确输出 `1.0.0`。
 
-```bash
-bun run packages/opencode/src/index.ts --help
-```
+不过，这种调用方式存在一个明显的工程缺陷。作为一款 CLI 工具，用户期望的调用方式是直接输入 `opencode --version`，而不是每次都手动指定运行时环境和脚本的绝对路径。我们需要将这段逻辑注册为操作系统的全局命令。
 
-输出：
+## 3.2 将脚本注册为系统命令
 
-```
-Unknown command
-```
+要将脚本转变为全局可执行命令，我们需要利用 `package.json` 中的 `bin` 字段。
 
-### 3.1.2 发现问题
-
-这个方案有两个明显的问题：
-
-**问题 1：每次都要敲 `bun run packages/opencode/src/index.ts`，太繁琐。**
-
-用户期望的是 `opencode --version`，而不是一长串路径。我们需要一种方式，让 `opencode` 成为一个全局可用的命令。
-
-**问题 2：参数解析逻辑太简陋。**
-
-当前只支持 `--version`。如果未来要支持 `--help`、`--debug`、`chat` 子命令，手动解析 `process.argv` 会变成一场噩梦。
-
-让我们先解决问题 1。
-
----
-
-## 3.2 迭代二：全局命令
-
-### 3.2.1 package.json 的 bin 字段
-
-在第 2 章，我们学习了 `package.json` 的 `bin` 字段如何让普通文件变成全局命令。现在，让我们应用这个知识。
-
-首先，确保 `packages/opencode/package.json` 中有 `bin` 字段：
+首先，在 `packages/opencode/package.json` 中声明命令映射：
 
 ```json
 {
@@ -85,138 +68,108 @@ Unknown command
     "opencode": "./bin/opencode"
   }
 }
+
 ```
 
-然后，创建 `packages/opencode/bin/opencode` 文件：
+接下来，创建对应的入口文件。在 `packages/opencode` 目录下创建 `bin/opencode` 文件（不需要添加后缀）：
 
 ```bash
-mkdir -p packages/opencode/bin
+mkdir -p bin
+touch bin/opencode
+
 ```
+
+在其中写入以下内容：
 
 ```javascript
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import("../src/index.ts")
+
 ```
 
-这里有一个细节需要注意：我们使用 `#!/usr/bin/env node` 作为 Shebang，但文件内容是 `import("../src/index.ts")`。这是因为 Bun 可以直接运行 TypeScript 文件，而 Node.js 需要 `.js` 扩展名。
+第一行的 `#!/usr/bin/env bun` 即 Shebang。它的作用是告知操作系统，在执行该文件时，应当去环境变量中查找 `bun` 作为解释器。第二行我们利用 Bun 原生支持 TypeScript 运行的特性，直接引入了源码文件。如果这里 Shebang 声明的是 `node`，程序在执行时会因为无法解析 `.ts` 文件的语法而抛出异常。
 
-### 3.2.2 验证全局命令
-
-在项目根目录执行：
+随后，我们需要让操作系统感知到这个映射关系。在 `packages/opencode` 目录下执行链接命令：
 
 ```bash
-cd packages/opencode
 bun link
-```
-
-输出：
 
 ```
-bun link v1.3.8
 
-Linked "opencode" to ~/.bun/bin/opencode
+终端输出如下：
 
-Run `opencode` to run the linked package.
+```bash
+bun link v1.3.10
+Success! Registered "opencode"
+
 ```
 
-现在，让我们测试：
+该命令的底层操作，是在系统环境变量包含的 `bin` 目录中，创建了一个指向我们 `./bin/opencode` 文件的符号链接（Symlink）。现在，你可以在任意目录下直接运行：
 
 ```bash
 opencode --version
-```
-
-输出：
 
 ```
-1.0.0
-```
 
-成功了！现在用户可以直接输入 `opencode --version`，而不需要敲一长串路径。
+### 3.2.1 路径校验引发的执行错误
 
-### 3.2.3 发现新问题
-
-全局命令的问题解决了。但参数解析的问题还在。
-
-让我们尝试添加 `--help` 支持：
-
-```typescript
-// packages/opencode/src/index.ts
-
-const args = process.argv.slice(2)
-
-if (args.includes("--version") || args.includes("-v")) {
-  console.log("1.0.0")
-} else if (args.includes("--help") || args.includes("-h")) {
-  console.log(`
-opencode - AI-powered development tool
-
-Usage:
-  opencode [command] [options]
-
-Commands:
-  chat    Start a chat session
-
-Options:
-  --version, -v    Show version
-  --help, -h       Show help
-`)
-} else {
-  console.log("Unknown command. Use --help for usage.")
-}
-```
-
-代码量增加到了 20 行。看起来还行，但如果我们继续添加：
-
-- `--debug` 参数
-- `chat` 子命令
-- `config` 子命令
-- 每个子命令有自己的 `--help`
-
-手动解析会变得难以维护。我们需要一个更好的方案。
-
----
-
-## 3.3 迭代三：引入 yargs
-
-### 3.3.1 为什么选择 yargs
-
-在 Node.js 生态中，命令行参数解析有几个主流选择：
-
-| 库 | 周下载量 | 特点 |
-|---|---------|------|
-| yargs | 4000万+ | 功能全面，自动生成 help |
-| commander | 3500万+ | 轻量，API 简洁 |
-| minimist | 3000万+ | 极简，只做解析 |
-
-我们选择 yargs，原因有三个：
-
-1. **自动生成 `--help`**：不需要手动维护帮助文本
-2. **子命令支持**：`opencode chat`、`opencode config` 等子命令有清晰的组织方式
-3. **类型推断**：配合 TypeScript，参数有类型提示
-
-### 3.3.2 安装 yargs
+在执行 `opencode --version` 时，部分环境可能会抛出如下错误：
 
 ```bash
-cd packages/opencode
-bun add yargs
-bun add -d @types/yargs
+error: bun is not installed in $PATH
+
+Please run the following command, or double check $PATH is right.
+
 ```
 
-### 3.3.3 重构代码
+如果单独运行 `bun -v` 正常，但在符号链接调用时报错，通常是因为 Bun 的安装方式造成的路径校验失败。
 
-让我们用 yargs 重写 `index.ts`：
+许多开发者曾通过 `npm i -g bun` 安装 Bun。这种方式下载的并非由 Zig/C++ 编译的底层二进制文件，而是一个 Node.js 编写的 Wrapper（包装器）。当符号链接尝试唤起底层进程时，会严格校验真实二进制文件的绝对路径。如果包装器未能正确将真实二进制文件放置在系统的 `$PATH` 寻址路径中，就会触发此报错。
+
+解决方法是移除 npm 安装的版本，并使用官方推荐的脚本直接安装二进制文件：
+
+```bash
+# macOS/Linux
+curl -fsSL https://bun.sh/install | bash
+
+# Windows (PowerShell)
+powershell -c "irm bun.sh/install.ps1|iex"
+
+```
+
+重启终端后重新执行，即可看到正常的输出。
+
+## 3.3 引入 Yargs 管理命令路由
+
+通过手写 `if-else` 解析 `process.argv` 的方式虽然直观，但在扩展时会面临难以维护的问题。假设我们需要新增一个对话命令 `opencode chat --model claude-3`，基于数组遍历的解析逻辑会变得非常繁琐：我们需要判断索引位置、提取键值对、处理必填项校验，并且还要手动编写 `--help` 的打印逻辑。
+
+为了解决命令路由和参数清洗的问题，我们可以引入成熟的解析库。这里我们选择 `yargs`。
+
+```bash
+bun add yargs
+
+```
+
+回到 `index.ts`，我们将前文手动解析数组的代码移除，使用 `yargs` 重构：
 
 ```typescript
 // packages/opencode/src/index.ts
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 
-yargs(hideBin(process.argv))
+// 1. 拦截并清洗参数
+const cli = yargs(hideBin(process.argv))
+
+cli
+  // 2. 注册基础命令
   .version("1.0.0")
+  .help()
+  // 3. 定义子命令
   .command(
     "chat",
     "Start a chat session",
     (yargs) => {
+      // 定义 chat 命令所需的选项
       return yargs.option("model", {
         type: "string",
         description: "AI model to use",
@@ -224,215 +177,150 @@ yargs(hideBin(process.argv))
       })
     },
     (argv) => {
+      // 命令匹配时的执行回调
       console.log(`Starting chat with model: ${argv.model}`)
-      console.log("TODO: implement chat")
-    }
+    },
   )
+  // 4. 兜底策略：未输入具体命令时进行提示
   .demandCommand(1, "You need at least one command before moving on")
-  .help()
-  .parse()
+  .parse() // 触发解析逻辑
+
 ```
 
-代码量是 25 行，但功能比手动解析强得多。让我们验证：
+观察上述代码的几个核心调整：
+
+* `hideBin(process.argv)`：该工具函数的底层逻辑即 `process.argv.slice(2)`，它负责剥离运行时路径，将纯净的用户参数传递给 yargs 实例。
+* `command()` 方法：它将命令分为描述、参数定义（builder）和逻辑执行（handler）三个部分，使得参数解析与业务逻辑彻底解耦。
+
+在终端中输入不带参数的命令，触发默认行为：
 
 ```bash
-opencode --version
-```
-
-输出：
-
-```
-1.0.0
-```
-
-```bash
-opencode --help
-```
-
-输出：
-
-```
 opencode
 
+```
+
+yargs 会自动拦截并生成格式化的帮助文档：
+
+```bash
 Commands:
   opencode chat  Start a chat session
 
 Options:
   --version  Show version number                                       [boolean]
   --help     Show help                                                 [boolean]
+
+You need at least one command before moving on
+
 ```
+
+输入带参数的子命令进行验证：
 
 ```bash
-opencode chat --help
-```
-
-输出：
+opencode chat --model claude-3.5-sonnet
+# 输出：Starting chat with model: claude-3.5-sonnet
 
 ```
-opencode chat
 
-Start a chat session
+功能运行正常。但如果此时查看编辑器，会发现 `process` 和引入的 `yargs` 模块存在 TypeScript 缺失类型的报错。
 
-Options:
-  --model  AI model to use                    [string] [default: "gpt-4"]
-  --help   Show help                                           [boolean]
+## 3.4 补充类型与路径映射
+
+编辑器报错提示 `process` 未定义，以及 `yargs` 隐式具有 `any` 类型。这是由于工程中尚未安装对应的 `.d.ts` 类型声明文件。
+
+由于 `process` 属于底层的 Node.js 环境 API，其类型声明应当在 Monorepo 根目录进行版本锁定，以防止不同子包引入不一致的版本引发类型冲突。我们在根目录的 `package.json` 的 `catalog` 字段中统一声明版本：
+
+```json
+// 根目录 package.json
+{
+  "workspaces": {
+    "packages": ["packages/*"],
+    "catalog": {
+      "@types/bun": "1.3.5",
+      "@types/node": "25.3.3"
+    }
+  },
+  "overrides": {
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:"
+  }
+}
+
 ```
+
+随后在项目根目录运行 `bun install` 更新依赖树。
+
+对于仅在当前 CLI 模块使用的 `yargs`，我们直接在 `packages/opencode` 目录下安装其专属类型：
 
 ```bash
-opencode chat --model claude-3
-```
-
-输出：
+cd packages/opencode
+bun add -d @types/yargs
 
 ```
-Starting chat with model: claude-3
-TODO: implement chat
+
+安装完类型后，我们需要为 TypeScript 编译器提供一份配置文件，指导其如何解析这些类型以及处理模块的路径映射。在 `packages/opencode` 目录下新建 `tsconfig.json`：
+
+```json
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@tsconfig/bun/tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+
 ```
 
-### 3.3.4 关键代码解析
+此配置包含两个关键设定：
 
-让我们逐行理解这段代码：
+1. `extends`：直接继承 Bun 官方维护的基准配置，确保 TypeScript 的编译行为与 Bun 运行时的模块解析规则严格对齐。
+2. `paths`：定义 `@/*` 指向 `./src/*`。这能避免在多层级目录中出现 `../../../` 这种脆弱的相对路径引用。
 
-```typescript
-yargs(hideBin(process.argv))
-```
+保存文件后，编辑器中的类型报错会自动消除。
 
-`hideBin(process.argv)` 是一个工具函数，它返回 `process.argv.slice(2)`，即去掉 `node` 和脚本路径，只保留用户输入的参数。
+## 3.5 完善状态输出
 
-```typescript
-.version("1.0.0")
-```
+在实际的工程交付中，CLI 的版本号必须与 `package.json` 中的 `version` 字段保持一致。前文中我们通过 `.version("1.0.0")` 硬编码了版本号，一旦发版极易造成信息不同步。
 
-自动添加 `--version` 和 `-v` 支持，版本号从 `package.json` 读取或直接指定。
+我们可以利用规范中支持的 JSON 模块导入功能，直接读取配置文件。同时，为了便于后续排查大模型 SDK 运行时的环境问题，我们再补充一个 `debug` 命令用于输出当前的运行状态。
 
-```typescript
-.command(
-  "chat",
-  "Start a chat session",
-  (yargs) => { ... },  // builder: 定义子命令的参数
-  (argv) => { ... }    // handler: 子命令的执行逻辑
-)
-```
-
-定义一个子命令。`builder` 函数用于定义参数，`handler` 函数用于执行逻辑。
-
-```typescript
-.demandCommand(1, "You need at least one command before moving on")
-```
-
-要求用户必须提供至少一个命令。如果用户只输入 `opencode`，会显示错误提示。
-
-```typescript
-.help()
-```
-
-自动添加 `--help` 和 `-h` 支持。
-
-```typescript
-.parse()
-```
-
-解析参数并执行对应的 handler。
-
----
-
-## 3.4 本章小结
-
-### 3.4.1 迭代过程回顾
-
-我们经历了三次迭代：
-
-| 迭代 | 问题 | 解决方案 | 代码量 |
-|-----|------|---------|--------|
-| 3.1 | 如何解析 `--version`？ | 手动解析 `process.argv` | 8 行 |
-| 3.2 | 如何变成全局命令？ | `package.json` bin 字段 + `bun link` | 20 行 |
-| 3.3 | 如何支持更多参数？ | 引入 yargs | 25 行 |
-
-每次迭代都是因为遇到了具体的问题，而不是一开始就追求"完美架构"。这是真实开发的节奏。
-
-### 3.4.2 最终代码
+更新 `index.ts` 如下：
 
 ```typescript
 // packages/opencode/src/index.ts
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
+// 引入 package.json
+import packageJson from "../../package.json" with { type: "json" }
 
-yargs(hideBin(process.argv))
-  .version("1.0.0")
+const cli = yargs(hideBin(process.argv))
+
+cli
+  // 动态读取并设置版本号
+  .version(packageJson.version)
+  .help()
   .command(
     "chat",
     "Start a chat session",
-    (yargs) => {
-      return yargs.option("model", {
-        type: "string",
-        description: "AI model to use",
-        default: "gpt-4",
-      })
-    },
-    (argv) => {
-      console.log(`Starting chat with model: ${argv.model}`)
-      console.log("TODO: implement chat")
+    // ... 前文的 chat 代码保持不变
+  )
+  // 新增 debug 命令
+  .command(
+    "debug",
+    "Print environment info for debugging",
+    () => {},
+    () => {
+      console.log("--- Debug Info ---")
+      console.log(`Version  : ${packageJson.version}`)
+      console.log(`Platform : ${process.platform}`)
+      console.log(`Node/Bun : ${process.version}`)
+      console.log(`CWD      : ${process.cwd()}`)
     }
   )
   .demandCommand(1, "You need at least one command before moving on")
-  .help()
   .parse()
+
 ```
 
-### 3.4.3 验证清单
-
-在进入下一章之前，请确保以下命令都能正常工作：
-
-```bash
-opencode --version
-# 期望输出: 1.0.0
-
-opencode --help
-# 期望输出: 帮助信息，包含 chat 命令
-
-opencode chat --help
-# 期望输出: chat 命令的帮助信息，包含 --model 参数
-
-opencode chat --model claude-3
-# 期望输出: Starting chat with model: claude-3
-#          TODO: implement chat
-```
-
----
-
-## 3.5 读者练习
-
-### 练习 1：添加 debug 命令
-
-添加一个 `opencode debug` 命令，输出以下信息：
-
-- Node.js 版本：`process.version`
-- 平台：`process.platform`
-- 架构：`process.arch`
-- 当前工作目录：`process.cwd()`
-
-**提示**：参考 `chat` 命令的定义方式。
-
-### 练习 2：版本号从 package.json 读取
-
-当前版本号是硬编码的 `"1.0.0"`。尝试从 `package.json` 动态读取版本号。
-
-**提示**：可以使用 `import { readFileSync } from "fs"` 读取 JSON 文件，或者使用 Bun 的 `Bun.file()` API。
-
-### 练习 3：添加 config 命令
-
-添加一个 `opencode config` 命令，支持以下子命令：
-
-- `opencode config list`：列出所有配置
-- `opencode config get <key>`：获取指定配置
-- `opencode config set <key> <value>`：设置配置
-
-**提示**：yargs 支持嵌套子命令，可以查阅文档了解 `command` 的更多用法。
-
----
-
-## 3.6 延伸阅读
-
-- [yargs 官方文档](https://yargs.js.org/)
-- [Node.js process.argv 详解](https://nodejs.org/docs/latest/api/process.html#process_process_argv)
-- [npm package.json bin 字段规范](https://docs.npmjs.com/cli/v10/configuring-npm/package-json#bin)
+此时运行 `opencode debug`，你将看到当前进程真实的运行上下文输出。至此，一个具备扩展性、类型安全的最小可用 CLI 骨架已经搭建完毕。在下一章，我们将在这套骨架内正式接入 AI SDK。
