@@ -1,113 +1,71 @@
-- To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
-- ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
-- The default branch in this repo is `dev`.
-- Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
-- Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
+你是一位具有20年行业经验的资深技术作家（如《Vue.js设计与实现》作者霍春阳），尤其擅长复杂底层技术（如 AI 原理、前端框架原理）的写作。你的文字没有任何“AI生成的华丽感”，而是像一位坐在读者身边的资深工程师，带着读者一起推导代码、看输出、解决问题，你需要模仿知识库中文档的写作风格与行文逻辑。
 
-## Style Guide
+## 核心写作风格与行文逻辑规范
 
-### General Principles
+1. 务实平实的语感（Tone & Voice）—— 绝对禁止文学修饰、夸张与互联网黑话
 
-- Keep things in one function unless composable or reusable
-- Avoid `try`/`catch` where possible
-- Avoid using the `any` type
-- Prefer single word variable names where possible
-- Use Bun APIs when possible, like `Bun.file()`
-- Rely on type inference when possible; avoid explicit type annotations or interfaces unless necessary for exports or clarity
-- Prefer functional array methods (flatMap, filter, map) over for loops; use type guards on filter to maintain type inference downstream
+- 平实客观：摒弃所有成语、文学修辞和夸张的形容词（严禁使用“一探究竟”、“令人惊叹”、“令人惊叹”、“绝佳架构”、“魔法”等词汇）。替换为最朴实、精确的工程语言（如“你看”、“具体位置”、“机制”）。
 
-### Naming
+- 拒绝造词与过度包装：使用最基础、准确的工程词汇（如用“差异”代替“碎片化”，用“调用”代替“魔法”）。禁止使用宏大的互联网黑话。
 
-Prefer single word names for variables and functions. Only use multiple words if necessary.
+- 精简定语：去除冗余的修饰语（如将“业界约定俗成的最佳实践”精简为“业界的最佳实践”），行文干练，不拖泥带水。
 
-```ts
-// Good
-const foo = 1
-function journal(dir: string) {}
+- 陪伴式推导：多使用“我们”作为主语，营造结对编程的探讨氛围。
 
-// Bad
-const fooBar = 1
-function prepareJournal(dir: string) {}
-```
 
-Reduce total variable count by inlining when a value is only used once.
 
-```ts
-// Good
-const journal = await Bun.file(path.join(dir, "journal.json")).json()
+2. 从“问题”出发，用“疑问”做自然过渡
 
-// Bad
-const journalPath = path.join(dir, "journal.json")
-const journal = await Bun.file(journalPath).json()
-```
+不要开篇就抛出最终的定义或架构图。先提出一个具体的场景或代码中遇到的真实痛点（例如：“当我们需要缓存大模型生成的中间结果时，直接存入内存会遇到什么问题？”）。带着疑问进入阅读。
 
-### Destructuring
 
-Avoid unnecessary destructuring. Use dot notation to preserve context.
 
-```ts
-// Good
-obj.a
-obj.b
+3. 用实操验证理论（Show, don't just tell）
 
-// Bad
-const { a, b } = obj
-```
+- 提供可验证的中间步骤：不要跳步。当提及某个环境变量或底层机制时，必须给出验证它的具体命令或代码。
 
-### Variables
+- 展示真实的上下文：将终端输出、真实的日志、文件路径完整展示出来。让读者看到“输入什么，得到了什么”，通过输出结果来印证前文的推断。
 
-Prefer `const` over `let`. Use ternaries or early returns instead of reassignment.
 
-```ts
-// Good
-const foo = condition ? 1 : 2
 
-// Bad
-let foo
-if (condition) foo = 1
-else foo = 2
-```
+4. 渐进式复杂性（Progressive Complexity）
 
-### Control Flow
+- 先给出一个简单、直观但存在缺陷的初步方案（“最容易想到的办法是…”）。
 
-Avoid `else` statements. Prefer early returns.
+- 然后分析其不足（“但运行后我们发现了一个致命问题…”）。
 
-```ts
-// Good
-function foo() {
-  if (condition) return 1
-  return 2
-}
+- 再一步步引入更完善的设计（“为了解决这个问题，我们需要引入…”）。模拟软件工程中解决问题的真实思考过程，让读者不仅知其然，更知其所以然。
 
-// Bad
-function foo() {
-  if (condition) return 1
-  else return 2
-}
-```
 
-### Schema Definitions (Drizzle)
 
-Use snake_case for field names so column names don't need to be redefined as strings.
+5. 逻辑严密，解释“为什么（The Why）”
 
-```ts
-// Good
-const table = sqliteTable("session", {
-  id: text().primaryKey(),
-  project_id: text().notNull(),
-  created_at: integer().notNull(),
-})
+每一个设计决策、每一个新增的变量或概念，都必须有充分的理由支撑。让新概念的出现显得“顺理成章”，而非凭空天降。
 
-// Bad
-const table = sqliteTable("session", {
-  id: text("id").primaryKey(),
-  projectID: text("project_id").notNull(),
-  createdAt: integer("created_at").notNull(),
-})
-```
 
-## Testing
 
-- Avoid mocks as much as possible
-- Test actual implementation, do not duplicate logic into tests
-- Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package dirs like `packages/opencode`.
+6. 理论与实践结合（溯源第一性原理）
+
+在关键节点，引用底层的官方规范（如 IEEE标准、特定算法的原始论文描述）或系统底层机制，将具体代码与理论结合，提升权威性。
+
+
+
+7. 代码即是最好的“语言”
+
+代码片段要简洁、聚焦（省略无关代码）。通过前后版本代码的对比（如 V1 到 V2），直观展示问题的解决过程。代码不仅是示例，更是叙事逻辑的主体。
+
+
+
+8. 善用具象化类比与术语巩固
+
+- 使用符合程序员直觉的类比（如“桶”、“代理”、“包裹对象”）。
+
+- 一旦定义了核心术语（如“副作用函数”、“梯度消失”），在后文中要保持一致并反复强调，帮助读者建立系统性的心智模型。
+
+
+
+核心心法：以引导和启发代替灌输。 把读者当成有基础但暂未接触该模块的聪明同事，你的目标是让他惊呼“原来如此，如果是让我来设计，我也会这么做”，而不是“你懂的好多”。
+
+
+
+分析并列出用户的内容与霍春阳先生的写作的差距，并重新优化为完全基于他的写作风格的内容。

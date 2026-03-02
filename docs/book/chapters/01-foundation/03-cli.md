@@ -1,6 +1,6 @@
-# 1.2 CLI 骨架：一条命令的完整生命周期
+# 第 3 章：CLI 骨架：一条命令的完整生命周期
 
-## 2.0 引言：从 opencode --version 说起
+## 3.0 引言：从 opencode --version 说起
 
 想象你是 OpenCode 的新用户。你刚刚看到 GitHub 上的 README，按照说明执行了安装命令，我们以bun 命令为例：
 
@@ -30,9 +30,9 @@ $ opencode --version
 
 本章我们将从第一性原理出发，追踪这条命令的完整生命周期，详细解读从用户按下回车的那一刻，到屏幕上显示版本号其背后的技术细节。更重要的是，你会理解为什么要这样设计，以及在构建自己的 CLI 工具时如何做出正确的决策。
 
-## 2.1 寻址：操作系统如何找到 opencode？
+## 3.1 寻址：操作系统如何找到 opencode？
 
-### 2.1.1 环境变量与符号链接（Symbolic Link）
+### 3.1.1 环境变量与符号链接（Symbolic Link）
 
 当我们在终端输入一个非内置的系统命令时，操作系统必须要知道这个程序实体存放在硬盘的具体位置。为了追踪它的真实路径，我们可以借助 shell 的内置命令 type 来看看：
 
@@ -93,7 +93,7 @@ $ readlink /Users/gavin/.bun/bin/opencode
 
 这也是现代包管理器实现全局命令机制的通用设计：用一个稳定的入口路径，指向可被替换的版本目录。
 
-### 2.1.2 桥接的纽带：package.json
+### 3.1.2 桥接的纽带：package.json
 
 但这引出了下一个问题：包管理器是怎么知道要创建 opencode 这个命令名的？答案在 `package.json` 中。
 
@@ -109,7 +109,7 @@ $ readlink /Users/gavin/.bun/bin/opencode
 
 这个配置告诉bun："当用户安装这个包时，请创建一个名为 `opencode` 的命令，指向 `./bin/opencode` 文件,也就是上一节我们提到的符号链接：`~/.bun/bin/opencode` , 该链接直接指向该包的实际安装目录：`~/.bun/install/global/node_modules/opencode-ai`。
 
-### 2.1.3 实验：验证这个机制
+### 3.1.3 实验：验证这个机制
 
 让我们创建一个最简单的可执行包来验证这个机制：
 
@@ -150,7 +150,7 @@ hello
 
 现在我们深入这个可执行文件 `bin/opencode`，看看到底写了什么。
 
-## 2.2 Shebang - 让文本文件变成可执行程序
+## 3.2 Shebang - 让文本文件变成可执行程序
 
 现在我们知道符号链接指向了 `bin/opencode`，我们使用 cat 命令查看它的内容：
 
@@ -171,7 +171,7 @@ const childProcess = require("child_process")
 > - `!` 读作 "bang"
 > - 合起来就是 "shebang"
 
-### 2.2.3 寻找解释器：为什么是 /usr/bin/env
+### 3.2.1 寻找解释器：为什么是 /usr/bin/env
 
 直觉上，既然我们需要 Node.js 环境，直接写绝对路径似乎是最严谨的：
 
@@ -183,7 +183,7 @@ const childProcess = require("child_process")
 
 为了抹平这种环境碎片化，业界约定俗成的最佳实践是使用 env 工具：#!/usr/bin/env node。这样做的巧妙之处在于，内核会先调用系统自带的 env 程序，再由 env 程序去当前用户的 PATH 环境变量中动态搜寻 node 所在的位置。这是一种非常优雅的**“动态决议（Dynamic Resolution）”**策略。
 
-### 2.2.4 实验：理解 Shebang 的作用
+### 3.2.2 实验：理解 Shebang 的作用
 
 让我们创建两个文件对比：
 
@@ -218,7 +218,7 @@ chmod +x with-shebang.js
 
 **关键洞察：Shebang 让文本文件变成了可执行程序。**
 
-## 2.3 启动器模式（Launcher Pattern）：解耦的艺术
+## 3.3 启动器模式（Launcher Pattern）：解耦的艺术
 
 在理清了系统执行机制后，我们回过头来审视 CLI 工具本身的架构设计。
 
@@ -245,7 +245,7 @@ startAIContext(args)
 
 在这种模式下，入口文件（bin/opencode）被彻底剥夺了业务处理能力，它的职责被缩减为一个纯粹的环境监测与路由器。
 
-### 2.3.1 实现一个基础启动器
+### 3.3.1 实现一个基础启动器
 
 我们需要在启动器中创建一个 run 函数，用来拉起真正的目标程序。一开始，我们可能会写出这样简单的代码：
 
@@ -286,7 +286,7 @@ function run(targetPath) {
 
 通过配置 stdio: "inherit"，我们将主进程的 stdin, stdout, stderr 完全代理给了子进程。此时，用户在终端的视觉体验与直接运行目标程序完全一致。启动器成功隐形了。
 
-### 2.3.2 动态架构路由：精准分发
+### 3.3.2 动态架构路由：精准分发
 
 既然拥有了执行器，下一步就是如何找到正确的二进制文件。这就需要用到 Node.js 提供的内置模块 os。
 最容易想到的办法是，直接根据操作系统的平台（Platform）和架构（Arch）进行字符串拼接：
@@ -330,7 +330,7 @@ if (fs.existsSync(cached)) {
 
 你看，通过增加这两步，我们将控制权交还给了开发者。只有当这两者都不存在时，我们才继续执行后续的平台匹配逻辑。缓存机制则确保了在后续的运行中，我们可以快速定位到正确的二进制文件，而无需重复计算。
 
-### 2.3.3 深入硬件与系统底层：AVX2 与 Musl
+### 3.3.3 深入硬件与系统底层：AVX2 与 Musl
 
 刚才构建的 opencode-linux-x64 真的能覆盖所有 Linux 的 x64 机器吗？
 
@@ -392,7 +392,7 @@ function isMusl() {
 }
 ```
 
-### 2.3.4 降级策略：构建后备依赖队列
+### 3.3.4 降级策略：构建后备依赖队列
 明确了环境差异后，我们不能仅仅拼出一个包名就结束了。试想，如果系统支持 AVX2，但包管理器因为网络问题只下载了 Baseline（基础版）的包，程序是不是就该直接崩溃？
 更稳妥的设计是降级（Fallback）策略。我们需要构建一个数组，按照“最优匹配 -> 次优匹配 -> 基础兼容”的顺序，生成一个可能存在的包名列表。
 
@@ -429,7 +429,7 @@ const names = (() => {
 你看这个 names 数组的返回值，它体现了一种极具韧性的工程思维：哪怕当前是最特殊的 Linux + x64 + 不支持 AVX2 + musl 环境，它也会优先找 -baseline-musl 的包；如果找不到，再退而求其次，一层层回退，直到最后尝试标准的 base 包。
 
 
-### 2.3.5 目录穿透：应对 Monorepo 的包提升
+### 3.3.5 目录穿透：应对 Monorepo 的包提升
 
 万事俱备，最后一步就是拿着这个 names 数组去文件系统里找真实的可执行文件了。
 
@@ -470,247 +470,314 @@ if (!resolved) {
 
 回顾整个过程，你会发现，从最初几行的 childProcess.spawnSync，演变到需要处理环境变量、架构差异、硬件指令集、C 标准库、再到应对包管理器的提升机制。代码量增加了十倍不止。
 
-这不是为了复杂而复杂。底层的工具代码之所以长成这样，是被无数个极端的真实用户环境“逼”出来的。理解了这些，你也就真正理解了现代跨平台 CLI 工具设计的核心思想。
+这不是为了复杂而复杂。底层的工具代码之所以长成这样，是被无数个极端的真实用户环境"逼"出来的。理解了这些，你也就真正理解了现代跨平台 CLI 工具设计的核心思想。
 
-## 2.4 总结
+## 3.4 进程参数的传递机制
 
-现在我们可以画出 `opencode --version` 的完整执行流程：
+当我们在终端运行一个脚本时，用户输入的命令和参数是如何传递给执行环境的？无论是 Node.js 还是 Bun，都会将这些运行时参数收集在 `process.argv` 这个全局数组中。
 
-```
-用户输入: opencode --version
-    ↓
-操作系统在 PATH 中查找 opencode
-    ↓
-找到: /usr/local/bin/opencode (符号链接)
-    ↓
-指向: node_modules/opencode/bin/opencode
-    ↓
-Node.js 执行启动器脚本
-    ↓
-检查 OPENCODE_BIN_PATH 环境变量?
-    ├─ 是 → 直接执行指定路径
-    └─ 否 → 继续
-        ↓
-    检查缓存文件 .opencode 是否存在?
-        ├─ 是 → 直接执行缓存
-        └─ 否 → 继续
-            ↓
-        检测平台和架构 (如: darwin + arm64)
-            ↓
-        x64 架构? 检测 AVX2 指令集支持
-            ↓
-        Linux 平台? 检测 musl libc
-            ↓
-        生成候选包名列表 (按优先级排序)
-            ↓
-        向上查找 node_modules
-            ↓
-        找到二进制文件: node_modules/opencode-darwin-arm64/bin/opencode
-            ↓
-        使用 spawnSync 执行
-            ↓
-        传递参数: ["--version"]
-            ↓
-        继承 stdio (用户看到输出)
-            ↓
-        等待执行完成
-            ↓
-        传递退出码
-            ↓
-        用户看到: opencode version 1.1.39
+为了直观地观察它的内部结构，我们在 `packages/opencode/src/index.ts` 中编写第一段代码，将其打印出来：
+
+```typescript
+// packages/opencode/src/index.ts
+console.log(process.argv)
 ```
 
+在终端中执行该文件，并附带一个 `--version` 参数：
 
-下一章我们将介绍 OpenCode CLI 的完整架构。并逐步实现核心功能。
+```bash
+bun run packages/opencode/src/index.ts --version
+```
 
+观察终端输出的结果：
 
-## 代码附录
+```bash
+[
+  "/usr/local/bin/node",                                   // 索引 0: 运行时可执行文件的绝对路径
+  "/Users/xxx/opencode/packages/opencode/src/index.ts",    // 索引 1: 当前执行脚本的绝对路径
+  "--version"                                              // 索引 2: 用户实际传入的参数
+]
+
+```
+
+从输出结果可以看出，`process.argv` 的前两个元素固定为底层运行时的路径和目标脚本的路径。用户真正输入的业务参数，永远从索引 `2` 开始。
+
+明确了这一点，我们就可以通过截取数组来获取有效参数，并进行最基本的条件判断：
+
+```typescript
+// packages/opencode/src/index.ts
+const args = process.argv.slice(2)
+
+if (args.includes("--version") || args.includes("-v")) {
+  console.log("1.0.0")
+} else {
+  console.log("Unknown command")
+}
+```
+
+再次运行上述 `bun run` 命令，终端会正确输出 `1.0.0`。
+
+不过，这种调用方式存在一个明显的工程缺陷。作为一款 CLI 工具，用户期望的调用方式是直接输入 `opencode --version`，而不是每次都手动指定运行时环境和脚本的绝对路径。我们需要将这段逻辑注册为操作系统的全局命令。
+
+## 3.5 将脚本注册为系统命令
+
+要将脚本转变为全局可执行命令，我们需要利用 `package.json` 中的 `bin` 字段。
+
+首先，在 `packages/opencode/package.json` 中声明命令映射：
+
+```json
+{
+  "name": "opencode",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "opencode": "./bin/opencode"
+  }
+}
+
+```
+
+接下来，创建对应的入口文件。在 `packages/opencode` 目录下创建 `bin/opencode` 文件（不需要添加后缀）：
+
+```bash
+mkdir -p bin
+touch bin/opencode
+```
+
+在其中写入以下内容：
 
 ```javascript
-#!/usr/bin/env node
+#!/usr/bin/env bun
+import("../src/index.ts")
+```
 
-const childProcess = require("child_process")
-const fs = require("fs")
-const path = require("path")
-const os = require("os")
+第一行的 `#!/usr/bin/env bun` 即 Shebang。它的作用是告知操作系统，在执行该文件时，应当去环境变量中查找 `bun` 作为解释器。第二行我们利用 Bun 原生支持 TypeScript 运行的特性，直接引入了源码文件。如果这里 Shebang 声明的是 `node`，程序在执行时会因为无法解析 `.ts` 文件的语法而抛出异常。
 
-function run(target) {
-  const result = childProcess.spawnSync(target, process.argv.slice(2), {
-    stdio: "inherit",
-  })
-  if (result.error) {
-    console.error(result.error.message)
-    process.exit(1)
-  }
-  const code = typeof result.status === "number" ? result.status : 0
-  process.exit(code)
-}
+随后，我们需要让操作系统感知到这个映射关系。在 `packages/opencode` 目录下执行链接命令：
 
-const envPath = process.env.OPENCODE_BIN_PATH
-if (envPath) {
-  run(envPath)
-}
+```bash
+bun link
+```
 
-const scriptPath = fs.realpathSync(__filename)
-const scriptDir = path.dirname(scriptPath)
+终端输出如下：
 
-//
-const cached = path.join(scriptDir, ".opencode")
-if (fs.existsSync(cached)) {
-  run(cached)
-}
+```bash
+bun link v1.3.10
+Success! Registered "opencode"
+```
 
-const platformMap = {
-  darwin: "darwin",
-  linux: "linux",
-  win32: "windows",
-}
-const archMap = {
-  x64: "x64",
-  arm64: "arm64",
-  arm: "arm",
-}
+该命令的底层操作，是在系统环境变量包含的 `bin` 目录中，创建了一个指向我们 `./bin/opencode` 文件的符号链接（Symlink）。现在，你可以在任意目录下直接运行：
 
-let platform = platformMap[os.platform()]
-if (!platform) {
-  platform = os.platform()
-}
-let arch = archMap[os.arch()]
-if (!arch) {
-  arch = os.arch()
-}
-const base = "opencode-" + platform + "-" + arch
-const binary = platform === "windows" ? "opencode.exe" : "opencode"
+```bash
+opencode --version
+```
 
-function supportsAvx2() {
-  if (arch !== "x64") return false
+### 3.5.1 路径校验引发的执行错误
 
-  if (platform === "linux") {
-    try {
-      return /(^|\s)avx2(\s|$)/i.test(fs.readFileSync("/proc/cpuinfo", "utf8"))
-    } catch {
-      return false
-    }
-  }
+在执行 `opencode --version` 时，部分环境可能会抛出如下错误：
 
-  if (platform === "darwin") {
-    try {
-      const result = childProcess.spawnSync("sysctl", ["-n", "hw.optional.avx2_0"], {
-        encoding: "utf8",
-        timeout: 1500,
+```bash
+error: bun is not installed in $PATH
+
+Please run the following command, or double check $PATH is right.
+```
+
+如果单独运行 `bun -v` 正常，但在符号链接调用时报错，通常是因为 Bun 的安装方式造成的路径校验失败。
+
+许多开发者曾通过 `npm i -g bun` 安装 Bun。这种方式下载的并非由 Zig/C++ 编译的底层二进制文件，而是一个 Node.js 编写的 Wrapper（包装器）。当符号链接尝试唤起底层进程时，会严格校验真实二进制文件的绝对路径。如果包装器未能正确将真实二进制文件放置在系统的 `$PATH` 寻址路径中，就会触发此报错。
+
+解决方法是移除 npm 安装的版本，并使用官方推荐的脚本直接安装二进制文件：
+
+```bash
+# macOS/Linux
+curl -fsSL https://bun.sh/install | bash
+
+# Windows (PowerShell)
+powershell -c "irm bun.sh/install.ps1|iex"
+```
+
+重启终端后重新执行，即可看到正常的输出。
+
+## 3.6 引入 Yargs 管理命令路由
+
+通过手写 `if-else` 解析 `process.argv` 的方式虽然直观，但在扩展时会面临难以维护的问题。假设我们需要新增一个对话命令 `opencode chat --model claude-3`，基于数组遍历的解析逻辑会变得非常繁琐：我们需要判断索引位置、提取键值对、处理必填项校验，并且还要手动编写 `--help` 的打印逻辑。
+
+为了解决命令路由和参数清洗的问题，我们可以引入成熟的解析库。这里我们选择 `yargs`。
+
+```bash
+bun add yargs
+```
+
+回到 `index.ts`，我们将前文手动解析数组的代码移除，使用 `yargs` 重构：
+
+```typescript
+// packages/opencode/src/index.ts
+import yargs from "yargs"
+import { hideBin } from "yargs/helpers"
+
+// 1. 拦截并清洗参数
+const cli = yargs(hideBin(process.argv))
+
+cli
+  // 2. 注册基础命令
+  .version("1.0.0")
+  .help()
+  // 3. 定义子命令
+  .command(
+    "chat",
+    "Start a chat session",
+    (yargs) => {
+      // 定义 chat 命令所需的选项
+      return yargs.option("model", {
+        type: "string",
+        description: "AI model to use",
+        default: "gpt-4",
       })
-      if (result.status !== 0) return false
-      return (result.stdout || "").trim() === "1"
-    } catch {
-      return false
-    }
-  }
-
-  if (platform === "windows") {
-    const cmd =
-      '(Add-Type -MemberDefinition "[DllImport(""kernel32.dll"")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)'
-
-    for (const exe of ["powershell.exe", "pwsh.exe", "pwsh", "powershell"]) {
-      try {
-        const result = childProcess.spawnSync(exe, ["-NoProfile", "-NonInteractive", "-Command", cmd], {
-          encoding: "utf8",
-          timeout: 3000,
-          windowsHide: true,
-        })
-        if (result.status !== 0) continue
-        const out = (result.stdout || "").trim().toLowerCase()
-        if (out === "true" || out === "1") return true
-        if (out === "false" || out === "0") return false
-      } catch {
-        continue
-      }
-    }
-
-    return false
-  }
-
-  return false
-}
-
-const names = (() => {
-  const avx2 = supportsAvx2()
-  const baseline = arch === "x64" && !avx2
-
-  if (platform === "linux") {
-    const musl = (() => {
-      try {
-        if (fs.existsSync("/etc/alpine-release")) return true
-      } catch {
-        // ignore
-      }
-
-      try {
-        const result = childProcess.spawnSync("ldd", ["--version"], { encoding: "utf8" })
-        const text = ((result.stdout || "") + (result.stderr || "")).toLowerCase()
-        if (text.includes("musl")) return true
-      } catch {
-        // ignore
-      }
-
-      return false
-    })()
-
-    if (musl) {
-      if (arch === "x64") {
-        if (baseline) return [`${base}-baseline-musl`, `${base}-musl`, `${base}-baseline`, base]
-        return [`${base}-musl`, `${base}-baseline-musl`, base, `${base}-baseline`]
-      }
-      return [`${base}-musl`, base]
-    }
-
-    if (arch === "x64") {
-      if (baseline) return [`${base}-baseline`, base, `${base}-baseline-musl`, `${base}-musl`]
-      return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]
-    }
-    return [base, `${base}-musl`]
-  }
-
-  if (arch === "x64") {
-    if (baseline) return [`${base}-baseline`, base]
-    return [base, `${base}-baseline`]
-  }
-  return [base]
-})()
-
-function findBinary(startDir) {
-  let current = startDir
-  for (;;) {
-    const modules = path.join(current, "node_modules")
-    if (fs.existsSync(modules)) {
-      for (const name of names) {
-        const candidate = path.join(modules, name, "bin", binary)
-        if (fs.existsSync(candidate)) return candidate
-      }
-    }
-    const parent = path.dirname(current)
-    if (parent === current) {
-      return
-    }
-    current = parent
-  }
-}
-
-const resolved = findBinary(scriptDir)
-if (!resolved) {
-  console.error(
-    "It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing " +
-      names.map((n) => `\"${n}\"`).join(" or ") +
-      " package",
+    },
+    (argv) => {
+      // 命令匹配时的执行回调
+      console.log(`Starting chat with model: ${argv.model}`)
+    },
   )
-  process.exit(1)
-}
+  // 4. 兜底策略：未输入具体命令时进行提示
+  .demandCommand(1, "You need at least one command before moving on")
+  .parse() // 触发解析逻辑
+```
 
-run(resolved)
+观察上述代码的几个核心调整：
+
+* `hideBin(process.argv)`：该工具函数的底层逻辑即 `process.argv.slice(2)`，它负责剥离运行时路径，将纯净的用户参数传递给 yargs 实例。
+* `command()` 方法：它将命令分为描述、参数定义（builder）和逻辑执行（handler）三个部分，使得参数解析与业务逻辑彻底解耦。
+
+在终端中输入不带参数的命令，触发默认行为：
+
+```bash
+opencode
+```
+
+yargs 会自动拦截并生成格式化的帮助文档：
+
+```bash
+Commands:
+  opencode chat  Start a chat session
+
+Options:
+  --version  Show version number                                       [boolean]
+  --help     Show help                                                 [boolean]
+
+You need at least one command before moving on
+```
+
+输入带参数的子命令进行验证：
+
+```bash
+opencode chat --model claude-3.5-sonnet
+# 输出：Starting chat with model: claude-3.5-sonnet
+```
+
+功能运行正常。但如果此时查看编辑器，会发现 `process` 和引入的 `yargs` 模块存在 TypeScript 缺失类型的报错。
+
+### 3.6.1 补充类型与路径映射
+
+编辑器报错提示 `process` 未定义，以及 `yargs` 隐式具有 `any` 类型。这是由于工程中尚未安装对应的 `.d.ts` 类型声明文件。
+
+由于 `process` 属于底层的 Node.js 环境 API，其类型声明应当在 Monorepo 根目录进行版本锁定，以防止不同子包引入不一致的版本引发类型冲突。我们在根目录的 `package.json` 的 `catalog` 字段中统一声明版本：
+
+```json
+// 根目录 package.json
+{
+  "workspaces": {
+    "packages": ["packages/*"],
+    "catalog": {
+      "@types/bun": "1.3.5",
+      "@types/node": "25.3.3"
+    }
+  },
+  "overrides": {
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:"
+  }
+}
 
 ```
 
+随后在项目根目录运行 `bun install` 更新依赖树。
 
-## 2.7 完整的 CLI 架构
+对于仅在当前 CLI 模块使用的 `yargs`，我们直接在 `packages/opencode` 目录下安装其专属类型：
+
+```bash
+cd packages/opencode
+bun add -d @types/yargs
+```
+
+安装完类型后，我们需要为 TypeScript 编译器提供一份配置文件，指导其如何解析这些类型以及处理模块的路径映射。在 `packages/opencode` 目录下新建 `tsconfig.json`：
+
+```json
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@tsconfig/bun/tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+```
+
+此配置包含两个关键设定：
+
+1. `extends`：直接继承 Bun 官方维护的基准配置，确保 TypeScript 的编译行为与 Bun 运行时的模块解析规则严格对齐。
+2. `paths`：定义 `@/*` 指向 `./src/*`。这能避免在多层级目录中出现 `../../../` 这种脆弱的相对路径引用。
+
+保存文件后，编辑器中的类型报错会自动消除。
+
+### 3.6.2 完善状态输出
+
+在实际的工程交付中，CLI 的版本号必须与 `package.json` 中的 `version` 字段保持一致。前文中我们通过 `.version("1.0.0")` 硬编码了版本号，一旦发版极易造成信息不同步。
+
+我们可以利用规范中支持的 JSON 模块导入功能，直接读取配置文件。同时，为了便于后续排查大模型 SDK 运行时的环境问题，我们再补充一个 `debug` 命令用于输出当前的运行状态。
+
+更新 `index.ts` 如下：
+
+```typescript
+// packages/opencode/src/index.ts
+import yargs from "yargs"
+import { hideBin } from "yargs/helpers"
+// 引入 package.json
+import packageJson from "../../package.json" with { type: "json" }
+
+const cli = yargs(hideBin(process.argv))
+
+cli
+  // 动态读取并设置版本号
+  .version(packageJson.version)
+  .help()
+  .command(
+    "chat",
+    "Start a chat session",
+    // ... 前文的 chat 代码保持不变
+  )
+  // 新增 debug 命令
+  .command(
+    "debug",
+    "Print environment info for debugging",
+    () => {},
+    () => {
+      console.log("--- Debug Info ---")
+      console.log(`Version  : ${packageJson.version}`)
+      console.log(`Platform : ${process.platform}`)
+      console.log(`Node/Bun : ${process.version}`)
+      console.log(`CWD      : ${process.cwd()}`)
+    }
+  )
+  .demandCommand(1, "You need at least one command before moving on")
+  .parse()
+
+```
+
+此时运行 `opencode debug`，你将看到当前进程真实的运行上下文输出。至此，一个具备扩展性、类型安全的最小可用 CLI 骨架已经搭建完毕。
+
+## 3.7 完整的 CLI 架构
 
 现在我们可以总结 OpenCode CLI 的完整架构:
 
@@ -765,3 +832,53 @@ run(resolved)
 │                                                          │
 └─────────────────────────────────────────────────────────┘
 ```
+
+## 3.8 总结
+
+本章从操作系统如何找到可执行文件开始，逐步深入到 CLI 工具的完整实现。我们经历了以下关键阶段：
+
+**第一部分：系统底层机制（3.0 ~ 3.3）**
+
+1. **寻址机制**：理解了 PATH 环境变量和符号链接如何帮助操作系统找到命令
+2. **Shebang**：学会了用 `#!/usr/bin/env node` 让文本文件变成可执行程序
+3. **启动器模式**：实现了跨平台二进制分发的完整方案，包括 AVX2 检测、musl 兼容、降级策略
+
+**第二部分：CLI 代码实现（3.4 ~ 3.7）**
+
+4. **进程参数传递**：掌握了 `process.argv` 的结构和参数解析方法
+5. **bin 注册**：使用 `package.json` 的 `bin` 字段将脚本注册为全局命令
+6. **Yargs 集成**：引入成熟的命令行解析库，实现命令路由和参数验证
+7. **类型配置**：完善 TypeScript 类型声明和路径映射
+8. **版本号同步**：动态读取 `package.json` 中的版本号
+
+**完整执行流程**
+
+```
+用户输入: opencode --version
+    ↓
+操作系统在 PATH 中查找 opencode
+    ↓
+找到: /usr/local/bin/opencode (符号链接)
+    ↓
+指向: node_modules/opencode/bin/opencode
+    ↓
+执行 bin/opencode (启动器脚本)
+    ↓
+检查 OPENCODE_BIN_PATH 环境变量?
+    ├─ 是 → 直接执行指定路径
+    └─ 否 → 继续
+        ↓
+    检测平台和架构 (darwin + arm64)
+    ↓
+    查找二进制文件: opencode-darwin-arm64
+    ↓
+    执行二进制，传递参数
+    ↓
+    Node.js 执行 src/index.ts
+    ↓
+    Yargs 解析 --version 参数
+    ↓
+    输出: opencode version 1.1.39
+```
+
+下一章我们将介绍配置系统基础，学习如何管理多层级配置。
