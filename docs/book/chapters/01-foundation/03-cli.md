@@ -241,7 +241,7 @@ startAIContext(args)
 
 如果入口直接绑定了业务代码，我们该如何根据用户的当前环境，动态地执行对应的二进制文件呢？
 
-为了解决这个难题，我们需要引入一个中间层——启动器模式（Launcher Pattern）。
+为了解决这个难题，我们需要引入一种设计模式——启动器模式（Launcher Pattern）。
 
 在这种模式下，入口文件（bin/opencode）被彻底剥夺了业务处理能力，它的职责被缩减为一个纯粹的环境监测与路由器。
 
@@ -284,7 +284,7 @@ function run(targetPath) {
 }
 ```
 
-通过配置 stdio: "inherit"，我们将主进程的 stdin, stdout, stderr 完全代理给了子进程。此时，用户在终端的视觉体验与直接运行目标程序完全一致。启动器成功隐形了。
+通过配置 stdio: "inherit"，我们将主进程的 stdin, stdout, stderr 完全代理给了子进程。此时，用户在终端的视觉体验与直接运行目标程序完全一致。
 
 ### 3.3.2 动态架构路由：精准分发
 
@@ -293,16 +293,27 @@ function run(targetPath) {
 
 ```javascript
 // 第一版：基础路由（过于理想化）
-const os = require("os")
+const platformMap = {
+  darwin: "darwin",
+  linux: "linux",
+  win32: "windows",
+}
+const archMap = {
+  x64: "x64",
+  arm64: "arm64",
+  arm: "arm",
+}
 
-const platformMap = { darwin: "darwin", linux: "linux", win32: "windows" }
-const archMap = { x64: "x64", arm64: "arm64", arm: "arm" }
-
-const platform = platformMap[os.platform()] || os.platform()
-const arch = archMap[os.arch()] || os.arch()
-
-const binaryName = platform === "windows" ? "opencode.exe" : "opencode"
-const basePackageName = `opencode-${platform}-${arch}` // 例如: opencode-darwin-arm64
+let platform = platformMap[os.platform()]
+if (!platform) {
+  platform = os.platform()
+}
+let arch = archMap[os.arch()]
+if (!arch) {
+  arch = os.arch()
+}
+const base = "opencode-" + platform + "-" + arch
+const binary = platform === "windows" ? "opencode.exe" : "opencode"
 ```
 
 这段代码看似合理，但如果我们直接将其作为最终方案，在日常开发和线上运维时就会遇到麻烦。比如，当核心开发者在本地编译了一个新的二进制包想要测试时，难道要每次都去替换 node_modules 里的文件吗？
@@ -358,8 +369,16 @@ function supportsAvx2() {
 
   if (platform === "darwin") {
     // macOS 下通过 sysctl 系统调用获取
-    const result = childProcess.spawnSync("sysctl", ["-n", "hw.optional.avx2_0"], { encoding: "utf8" })
-    return (result.stdout || "").trim() === "1"
+    try {
+      const result = childProcess.spawnSync("sysctl", ["-n", "hw.optional.avx2_0"], {
+        encoding: "utf8",
+        timeout: 1500,
+      })
+      if (result.status !== 0) return false
+      return (result.stdout || "").trim() === "1"
+    } catch {
+      return false
+    }
   }
 
   // Windows 下则需要通过 PowerShell 调用 Kernel32.dll 的 API
@@ -403,7 +422,7 @@ const names = (() => {
 
   // 以 Linux 为例，构建完整的降级队列
    if (platform === "linux") {
-    if (isMusl) {
+    if (musl) {
       if (arch === "x64") {
         if (baseline) return [`${base}-baseline-musl`, `${base}-musl`, `${base}-baseline`, base]
         return [`${base}-musl`, `${base}-baseline-musl`, base, `${base}-baseline`]
@@ -470,7 +489,7 @@ if (!resolved) {
 
 回顾整个过程，你会发现，从最初几行的 childProcess.spawnSync，演变到需要处理环境变量、架构差异、硬件指令集、C 标准库、再到应对包管理器的提升机制。代码量增加了十倍不止。
 
-这不是为了复杂而复杂。底层的工具代码之所以长成这样，是被无数个极端的真实用户环境"逼"出来的。理解了这些，你也就真正理解了现代跨平台 CLI 工具设计的核心思想。
+这不是为了复杂而复杂。底层的工具代码之所以长成这样，是被无数个极端的真实用户环境"逼"出来的。理解了这些，你也就真正理解了现代跨平台 CLI 工具设计的核心思想。bin/opencode的完整代码请参考：https://github.com/anomalyco/opencode/blob/dev/packages/opencode/bin/opencode
 
 ## 3.4 进程参数的传递机制
 
@@ -521,8 +540,6 @@ if (args.includes("--version") || args.includes("-v")) {
 
 ## 3.5 将脚本注册为系统命令
 
-要将脚本转变为全局可执行命令，我们需要利用 `package.json` 中的 `bin` 字段。
-
 首先，在 `packages/opencode/package.json` 中声明命令映射：
 
 ```json
@@ -534,7 +551,6 @@ if (args.includes("--version") || args.includes("-v")) {
     "opencode": "./bin/opencode"
   }
 }
-
 ```
 
 接下来，创建对应的入口文件。在 `packages/opencode` 目录下创建 `bin/opencode` 文件（不需要添加后缀）：
@@ -544,7 +560,7 @@ mkdir -p bin
 touch bin/opencode
 ```
 
-在其中写入以下内容：
+为了更方面的进行后续的开发，我们暂时实现简单的启动器版本，后续我们会在合适的时机引入前面小节所讲的完整的启动器模式：
 
 ```javascript
 #!/usr/bin/env bun
@@ -744,7 +760,7 @@ bun add -d @types/yargs
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 // 引入 package.json
-import packageJson from "../../package.json" with { type: "json" }
+import packageJson from "../package.json" with { type: "json" }
 
 const cli = yargs(hideBin(process.argv))
 
@@ -775,7 +791,17 @@ cli
 
 ```
 
-此时运行 `opencode debug`，你将看到当前进程真实的运行上下文输出。至此，一个具备扩展性、类型安全的最小可用 CLI 骨架已经搭建完毕。
+此时运行 `opencode debug`，你将看到当前上下文输出：
+
+```bash
+--- Debug Info ---
+Version  : 0.0.1
+Platform : win32
+Node/Bun : v24.3.0
+CWD      : xxxx\packages\opencode
+```
+
+至此，一个具备扩展性、类型安全的最小可用 CLI 骨架已经搭建完毕。
 
 ## 3.7 完整的 CLI 架构
 
