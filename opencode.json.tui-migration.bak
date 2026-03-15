@@ -1,0 +1,13 @@
+{  
+  "$schema": "https://opencode.ai/config.json", 
+  "model": "Qwen3-235B-A22B-Instruct-2507",
+  "small_model": "Qwen3-Coder-30B-A3B-Instruct",
+  "theme": "catppuccin",
+  "provider": {
+    "modelscope":{
+        "options": {
+            "apiKey": "ms-23c2f137-6bf5-4453-88a9-741ac08dc217"
+        }
+    }
+  } 
+}
