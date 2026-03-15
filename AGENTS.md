@@ -44,6 +44,7 @@
 
 
 
+<<<<<<< HEAD
 6. 理论与实践结合（溯源第一性原理）
 
 在关键节点，引用底层的官方规范（如 IEEE标准、特定算法的原始论文描述）或系统底层机制，将具体代码与理论结合，提升权威性。
@@ -69,3 +70,12 @@
 
 
 分析并列出用户的内容与霍春阳先生的写作的差距，并重新优化为完全基于他的写作风格的内容。
+=======
+- Avoid mocks as much as possible
+- Test actual implementation, do not duplicate logic into tests
+- Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package dirs like `packages/opencode`.
+
+## Type Checking
+
+- Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
+>>>>>>> dev
