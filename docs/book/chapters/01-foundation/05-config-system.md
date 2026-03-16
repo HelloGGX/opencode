@@ -11,8 +11,7 @@
 
 ---
 
-在构建复杂的 CLI 工具链时，配置系统是不可或缺的基础设施。在开始讨论具体的实现之前，我们先来看一个真实的工程问题。
-
+在构建复杂的 CLI 工具链时，配置系统是不可或缺的基础设施。
 假设我们需要在 CLI 工具中接入 AI 大模型。最容易想到的办法是，直接在代码中硬编码默认的模型名称和提供商。但随着使用场景的扩展，有些项目需要使用 OpenAI，而有些项目为了处理更长的上下文，必须切换到 Anthropic。这意味着，我们需要一种机制，允许用户在外部定义并覆盖工具的内部默认行为。
 
 这正是配置系统出现的原因。本章我们将从零开始，一步步推导并设计一个支持多层级、具备类型安全校验的健壮配置系统。
@@ -73,13 +72,11 @@ bun run src/config/config.ts
 SyntaxError: JSON Parse error: Unrecognized token '/'
 ```
 
-为什么会这样？实际上，这并非 `JSON.parse` 的缺陷，而是 JSON 规范的有意为之。从本质上讲，JSON 被设计为纯粹的数据交换格式，其发明者 Douglas Crockford 移除了注释支持，以确保不同解析器行为的一致性。
+为什么会这样？ JSON.parse 无法解析带有注释的文本，这并非 API 的缺陷，而是 JSON 规范使然。JSON 设计之初的定位是轻量级、纯粹的数据交换格式。为了彻底消除不同解析器在处理注释时可能产生的歧义与不一致，其作者 Douglas Crockford 在制定规范时，果断舍弃了注释功能。
 
-但在配置文件的场景下，人类可读性和可维护性是刚需。这是一个典型的工程权衡：是坚持数据格式的纯粹性，还是妥协于开发体验？
+然而，在现代工程实践中，JSON 经常被降级用作配置文件。此时，代码的可读性与后期维护成本成了主要矛盾，注释的存在变得至关重要。
 
-### 5.1.2 引入 JSONC 支持
-
-为了解决这个问题，我们通常会引入 JSONC（JSON with Comments）。JSONC 是在 JSON 语法基础上允许使用 `//` 和 `/* */` 注释的扩展格式，主流编辑器（如 VS Code）原生支持该格式。
+为了解决这个问题，我们通常会引入 JSONC（JSON with Comments）。JSONC 是在 JSON 语法基础上允许使用 `//` 和 `/* */` 注释的扩展格式，VS Code 的 `settings.json` 底层就采用 JSONC 解析，但需要通过文件关联（File Association）或安装插件来识别 `.jsonc` 文件。
 
 首先安装 `jsonc-parser` 依赖：
 
@@ -129,7 +126,7 @@ interface Config {
 }
 ```
 
-但这里存在一个致命的问题：TypeScript 的类型检查仅在编译时（Compile-time）有效，在运行时（Runtime）这些类型信息会被完全擦除。换句话说，`parseJsonc` 返回的对象即便完全不符合 `Config` 接口，程序在加载配置这一步也不会报错。
+但这里存在一个问题：TypeScript 的类型检查仅在编译时（Compile-time）有效，在运行时（Runtime）这些类型信息会被完全擦除。换句话说，`parseJsonc` 返回的对象即便完全不符合 `Config` 接口，程序在加载配置这一步也不会报错。
 
 这种缺陷会导致错误被延后。程序可能要在执行到发起网络请求的那一刻，才因为缺少 `provider` 字段而崩溃，此时抛出的错误栈往往极其深且难以溯源。
 
@@ -200,7 +197,7 @@ ZodError: [
 ]
 ```
 
-可以看到，错误信息直接指出了 `provider` 字段不符合预期。这种"尽早失败（Fail Fast）"的机制极大提升了工具的健壮性。
+你看，错误信息直接指出了 `provider` 字段不符合预期。这种"尽早失败（Fail Fast）"的机制极大提升了工具的健壮性。
 
 继续完善配置 Schema，当我们希望约束用户配置的model的格式，比如我们希望在模型名前加上提供商的前缀，比如 `openai/gpt-4o-mini`。
 
@@ -247,38 +244,31 @@ ZodError: [
   "provider": "openai"
 }
 ```
-没有报错了，说明配置格式符合要求。
-
-### 5.2.3 扩展配置 Schema
+没有报错了，说明配置格式符合要求。可以预见的是，后续我们的Monorepo项目中，每个子包都会用到zod来校验类型。因此为了统一各个子包的zod版本，我们需要在根目录下安装zod依赖。并在catalog中添加zod的版本。接着再次回到packages/opencode目录下, 将zod的版本改为：`"zod": "catalog:"`。
 
 ## 5.3 多层级配置合并策略
 
 ### 5.3.1 配置层级的推演
 
-随着 CLI 工具被广泛使用，单点配置的局限性开始暴露。试想如下场景：
+当 CLI 工具在复杂的开发环境中铺开时，单一配置文件会存在一定的局限性。试想如下场景：
 
 一名开发者参与了公司内部的 10 个项目，他希望默认使用 `gpt-4o`，但唯独项目 A 需要使用 `claude-3-5-sonnet`。如果只有项目级配置，他必须在 9 个项目里重复配置 `gpt-4o`。
 
 为了解决这个问题，我们需要引入多层级配置。在实际的 OpenCode 项目中，配置的来源分为以下几级（优先级从低到高）：
 
-1. **全局配置（Global）**：存放在用户配置目录下（如 `~/.config/opencode/opencode.json`），代表用户的默认偏好。
-2. **项目配置（Project）**：存放在当前工作目录下（如 `./opencode.json`），针对特定项目的重写。
-3. **环境变量配置（Environment）**：通过 `OPENCODE_CONFIG` 指定，常用于 CI/CD 流程的动态注入。
-4. **托管配置（Managed）**：存放在系统的全局共享目录（如 `/etc/opencode/opencode.json`），通常用于企业的强制管控策略。
+1. **远程配置（Remote）**：存放在组织的 `.well-known/opencode`，用于定义组织的默认策略。
+2. **全局配置（Global）**：存放在用户配置目录下（如 `~/.config/opencode/opencode.json`），代表用户的默认偏好。
+3. **自定义配置（Custom）**：通过 `OPENCODE_CONFIG` 环境变量指定，自定义配置文件的路径。
+4. **项目配置（Project）**：存放在当前工作目录下（如 `./opencode.json`），针对特定项目的重写。
+5. **.opencode 目录配置**：存放在 `.opencode/` 目录下，包含 agents、commands、plugins 等子目录的配置。
+6. **内联配置（Inline）**：通过 `OPENCODE_CONFIG_CONTENT` 环境变量直接传入 JSON 字符串。
+7. **托管配置（Managed）**：存放在系统的全局共享目录（如 `/etc/opencode/opencode.json`），通常用于企业的强制管控策略，优先级最高。
 
 为什么托管配置的优先级最高？从本质上讲，这是一种企业管理的工程权衡。如果公司采购了特定模型的内网私有部署，托管配置能够无视用户的全局或项目级设置，强制重写请求目标，从而保障数据安全。
 
-这里有一个值得讨论的权衡：托管配置应该优先级最高吗？
-
-**支持的观点**：企业需要管控。比如公司购买了特定模型的授权，不允许员工使用其他模型。托管配置优先级最高，可以确保策略被执行。
-
-**反对的观点**：开发者可能需要调试。如果托管配置锁死了所有选项，开发者就无法临时切换模型进行测试。
-
-一个折中方案是：托管配置只覆盖特定字段，而不是全部配置。这需要更细粒度的合并策略。但在本章，我们先实现最简单的"全量覆盖"方案。
-
 ### 5.3.2 跨平台路径管理
 
-不同的操作系统针对"应用程序数据（Application Data）"有着完全不同的底层规范：
+开发跨平台 CLI 工具绕不开的一个隐性成本，在于需要处理不同操作系统的路径规范：
 
 - **Linux**：倾向于遵循 XDG Base Directory 规范，用户级配置通常放在 `~/.config` 目录下，系统级放在 `/etc` 目录。
 - **Windows**：有一套专属的环境变量，用户级数据存放在 `APPDATA`，系统级数据存放在 `ProgramData`。
@@ -293,7 +283,19 @@ cd packages/opencode
 bun add xdg-basedir
 ```
 
-接下来，我们创建一个全局路径管理模块：
+这个库封装了不同操作系统的路径规范，为开发者提供统一的 API：
+
+| 导出变量 | 用途 | Linux 默认值 | Windows 默认值 | macOS 默认值 |
+|---------|------|-------------|----------------|--------------|
+| xdgData | 应用数据目录 | ~/.local/share | %APPDATA% | ~/Library/Application Support |
+| xdgConfig | 配置文件目录 | ~/.config | %APPDATA% | ~/Library/Application Support |
+| xdgCache | 缓存目录 | ~/.cache | %LOCALAPPDATA% | ~/Library/Caches |
+| xdgState | 状态目录 | ~/.local/state | %LOCALAPPDATA% | ~/Library/Application Support |
+
+> 注意：xdg-basedir 官方文档明确指出"This package is meant for Linux"。在 Windows 和 macOS 下，它会尝试读取对应的 XDG 环境变量，如果未设置则回退到平台默认值。
+
+
+接下来创建全局路径管理模块：
 
 ```typescript
 // packages/opencode/src/global/index.ts
@@ -336,14 +338,35 @@ await Promise.all([
 ])
 ```
 
-这个模块的核心价值在于：通过 `xdg-basedir` 库，我们不需要手动判断 `process.platform`，库会自动根据操作系统返回符合规范的路径。
+这里我们使用 `Promise.all` 并行创建所有必需的目录。`recursive: true` 选项意味着如果父目录不存在，会自动创建整个目录链。例如，创建 `~/.local/share/opencode/log` 时，即使 `~/.local/share/opencode` 不存在，也会一并创建。
+
+这种在模块初始化时确保目录存在的做法，可以避免在后续使用时频繁检查目录是否存在，简化了业务逻辑。
+
+我们可以通过一个简单的验证来确认路径是否正确：
+
+```bash
+# 在 Linux 上运行
+node -e "const {xdgData, xdgConfig} = require('xdg-basedir'); console.log('data:', xdgData); console.log('config:', xdgConfig);"
+# 输出（Linux）
+data: /home/username/.local/share
+config: /home/username/.config
+```
+
+```bash
+# 在 Windows 上运行
+node -e "const {xdgData, xdgConfig} = require('xdg-basedir'); console.log('data:', xdgData); console.log('config:', xdgConfig);"
+# 输出（Windows）
+data: C:\Users\Administrator\.local\share
+config: C:\Users\Administrator\.config
+```
+可以看到，库自动处理了操作系统差异，我们只需要在此基础上拼接应用子目录即可。
 
 接下来，我们创建配置路径管理模块，专门处理配置文件的路径解析：
 
 ```typescript
 // packages/opencode/src/config/paths.ts
 import path from "path"
-import { parse as parseJsonc, printParseErrorCode } from "jsonc-parser"
+import { parse as parseJsonc } from "jsonc-parser"
 import { Global } from "../global"
 
 export namespace ConfigPaths {
@@ -371,26 +394,7 @@ export namespace ConfigPaths {
 
   // 解析 JSONC 文本
   export function parseText(text: string, filepath: string) {
-    // 支持 {env:VAR} 环境变量替换
-    text = text.replace(/\{env:([^}]+)\}/g, (_, varName) => {
-      return process.env[varName] || ""
-    })
-
-    const errors: any[] = []
-    const data = parseJsonc(text, errors, { allowTrailingComma: true })
-    
-    if (errors.length) {
-      const lines = text.split("\n")
-      const errorDetails = errors.map((e) => {
-        const beforeOffset = text.substring(0, e.offset).split("\n")
-        const line = beforeOffset.length
-        const column = beforeOffset[beforeOffset.length - 1].length + 1
-        return `${printParseErrorCode(e.error)} at line ${line}, column ${column}`
-      }).join("\n")
-      
-      throw new Error(`JSONC parse error in ${filepath}:\n${errorDetails}`)
-    }
-    
+    const data = parseJsonc(text)
     return data
   }
 }
@@ -436,10 +440,6 @@ cd packages/opencode
 bun add remeda
 ```
 
-### 5.3.4 实现配置加载器
-
-现在我们将所有组件整合起来，实现完整的配置加载逻辑：
-
 ```typescript
 // packages/opencode/src/config/config.ts
 import fs from "fs/promises"
@@ -455,10 +455,6 @@ const ConfigSchema = z.object({
   model: ModelId.optional(),
   provider: z.enum(["openai", "anthropic"]).optional(),
   apiKey: z.string().optional(),
-  agent: z.record(z.string(), z.any()).optional(),
-  plugin: z.array(z.string()).optional(),
-  permission: z.record(z.string(), z.any()).optional(),
-  instructions: z.array(z.string()).optional(),
 })
 
 type Config = z.infer<typeof ConfigSchema>
@@ -504,7 +500,7 @@ export async function load(cwd: string = process.cwd()): Promise<Config> {
 
 这里采用了最简单的实现方式：逐个加载并深度合并。配置加载完成后，通过 `ConfigSchema.parse()` 进行最终校验。
 
-### 5.3.5 验证多层级合并
+### 5.3.4 验证多层级合并
 
 让我们用实际输出来验证优先级是否正确。
 
@@ -518,7 +514,7 @@ mkdir -p ~/.config/opencode
 cat > ~/.config/opencode/opencode.json << 'EOF'
 {
   "provider": "openai",
-  "model": "gpt-4o-mini"
+  "model": "openai/gpt-4o-mini"
 }
 EOF
 ```
@@ -529,7 +525,7 @@ EOF
 # 在 packages/opencode 目录下
 cat > ./opencode.json << 'EOF'
 {
-  "model": "claude-3-5-sonnet-20241022"
+  "model": "claude/claude-3-5-sonnet"
 }
 EOF
 ```
@@ -548,11 +544,8 @@ console.log(config)
 
 ```bash
 bun run packages/opencode/src/config/test-load.ts
-```
-
-```text
 # 输出:
-{ provider: "openai", model: "claude-3-5-sonnet-20241022" }
+# { provider: "openai", model: "claude/claude-3-5-sonnet" }
 ```
 
 可以看到：
