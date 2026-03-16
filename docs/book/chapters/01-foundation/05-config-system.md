@@ -11,10 +11,9 @@
 
 ---
 
-在构建复杂的 CLI 工具链时，配置系统是不可或缺的基础设施。
 假设我们需要在 CLI 工具中接入 AI 大模型。最容易想到的办法是，直接在代码中硬编码默认的模型名称和提供商。但随着使用场景的扩展，有些项目需要使用 OpenAI，而有些项目为了处理更长的上下文，必须切换到 Anthropic。这意味着，我们需要一种机制，允许用户在外部定义并覆盖工具的内部默认行为。
 
-这正是配置系统出现的原因。本章我们将从零开始，一步步推导并设计一个支持多层级、具备类型安全校验的健壮配置系统。
+本章我们将从零开始，一步步推导并设计一个支持多层级、具备类型安全校验的配置系统。
 
 ## 5.1 从单文件配置到格式演进
 
@@ -33,9 +32,8 @@ cat > opencode.json << 'EOF'
 EOF
 ```
 
-配套的读取逻辑非常简单，直接利用 Node.js 原生的文件系统模块和 `JSON.parse`：
+接下来，我们创建一个配置加载器，负责读取这个文件并解析为对象：
 
-创建一个配置加载器 `config/config.ts`，负责读取配置文件并解析为对象：
 ```typescript
 // packages/opencode/src/config/config.ts
 import fs from "fs/promises"
@@ -50,10 +48,12 @@ console.log(config)
 ```
 
 运行上述代码：
+
 ```bash
 # 在 packages/opencode 目录下执行
 bun run src/config/config.ts
 ```
+
 我们可以顺利拿到配置对象。但实际投入使用后，我们很快就会收到用户的反馈：他们希望在配置文件中添加注释，以说明某个参数的用途。
 
 试想一下，当用户将配置修改为如下内容时：
@@ -72,11 +72,11 @@ bun run src/config/config.ts
 SyntaxError: JSON Parse error: Unrecognized token '/'
 ```
 
-为什么会这样？ JSON.parse 无法解析带有注释的文本，这并非 API 的缺陷，而是 JSON 规范使然。JSON 设计之初的定位是轻量级、纯粹的数据交换格式。为了彻底消除不同解析器在处理注释时可能产生的歧义与不一致，其作者 Douglas Crockford 在制定规范时，果断舍弃了注释功能。
+为什么会这样？JSON 规范不允许注释。JSON 的设计初衷是作为一种轻量级的数据交换格式，为了保证不同解析器之间的一致性，其作者 Douglas Crockford 在制定规范时舍弃了注释功能。
 
-然而，在现代工程实践中，JSON 经常被降级用作配置文件。此时，代码的可读性与后期维护成本成了主要矛盾，注释的存在变得至关重要。
+然而，在实际工程中，JSON 经常被用作配置文件。此时，代码的可读性与后期维护成本成了主要矛盾，注释的存在变得至关重要。
 
-为了解决这个问题，我们通常会引入 JSONC（JSON with Comments）。JSONC 是在 JSON 语法基础上允许使用 `//` 和 `/* */` 注释的扩展格式，VS Code 的 `settings.json` 底层就采用 JSONC 解析，但需要通过文件关联（File Association）或安装插件来识别 `.jsonc` 文件。
+为了解决这个问题，我们引入 JSONC（JSON with Comments）。JSONC 是在 JSON 语法基础上允许使用 `//` 和 `/* */` 注释的扩展格式。VS Code 的 `settings.json` 底层就采用 JSONC 解析。
 
 首先安装 `jsonc-parser` 依赖：
 
@@ -94,7 +94,6 @@ import { parse as parseJsonc } from "jsonc-parser"
 
 async function loadConfig() {
   const content = await fs.readFile("opencode.json", "utf-8")
-  // 即使包含注释，也能被正确解析为 JavaScript 对象
   return parseJsonc(content)
 }
 
@@ -117,22 +116,22 @@ console.log(config)
 }
 ```
 
-如果在 TypeScript 中，我们通常会定义一个接口（Interface）来约束结构：
+如果在 TypeScript 中，我们通常会定义一个接口来约束结构：
 
-```ts
+```typescript
 interface Config {
   model?: string
   provider?: "openai" | "anthropic"
 }
 ```
 
-但这里存在一个问题：TypeScript 的类型检查仅在编译时（Compile-time）有效，在运行时（Runtime）这些类型信息会被完全擦除。换句话说，`parseJsonc` 返回的对象即便完全不符合 `Config` 接口，程序在加载配置这一步也不会报错。
+但这里存在一个问题：TypeScript 的类型检查仅在编译时有效，在运行时这些类型信息会被完全擦除。换句话说，`parseJsonc` 返回的对象即便完全不符合 `Config` 接口，程序在加载配置这一步也不会报错。
 
 这种缺陷会导致错误被延后。程序可能要在执行到发起网络请求的那一刻，才因为缺少 `provider` 字段而崩溃，此时抛出的错误栈往往极其深且难以溯源。
 
 ### 5.2.2 基于 Zod 的运行时校验
 
-既然如此，我们就需要一种新的方案：能够在运行时对外部输入（边界数据）进行严格的结构化校验。这正是 Zod 等 Schema 校验库的核心设计目标。
+既然如此，我们就需要一种新的方案：能够在运行时对外部输入进行严格的结构化校验。这正是 Zod 等 Schema 校验库的核心设计目标。
 
 首先安装 Zod 依赖：
 
@@ -141,7 +140,7 @@ cd packages/opencode
 bun add zod
 ```
 
-接下来，我们在 `packages/opencode/src/config/` 目录下创建配置模块。首先定义配置的 Schema（模式）：
+接下来，我们在 `packages/opencode/src/config/` 目录下定义配置的 Schema：
 
 ```typescript
 // packages/opencode/src/config/config.ts
@@ -149,24 +148,15 @@ import fs from "fs/promises"
 import z from "zod"
 import { parse as parseJsonc } from "jsonc-parser"
 
-// ========== 基础类型定义 ==========
-
-// 模型 ID 格式：model (如 gpt-4o-mini)
 const ModelId = z.string()
 
-// ========== 配置 Schema ==========
-
-// 基础配置 Schema（本章实现）
 const BaseConfigSchema = z.object({
   model: ModelId.optional().describe("AI model to use, format: model"),
   provider: z.enum(["openai", "anthropic"]).optional().describe("AI provider"),
   apiKey: z.string().optional().describe("API key for the provider"),
 })
 
-// 从 Schema 自动推导 TypeScript 类型
 type Config = z.infer<typeof BaseConfigSchema>
-
-// ========== 配置加载器 ==========
 
 async function loadConfig(): Promise<Config> {
   const content = await fs.readFile("opencode.json", "utf-8")
@@ -181,10 +171,10 @@ console.log(config)
 现在，如果我们再次加载包含拼写错误的配置，程序会在第一时间拦截并抛出精准的错误：
 
 ```bash
-# 执行命令
 bun run src/config/config.ts
+```
 
-# 终端输出
+```text
 ZodError: [
   {
     "code": "unrecognized_keys",
@@ -197,32 +187,27 @@ ZodError: [
 ]
 ```
 
-你看，错误信息直接指出了 `provider` 字段不符合预期。这种"尽早失败（Fail Fast）"的机制极大提升了工具的健壮性。
+你看，错误信息直接指出了 `providre` 字段不符合预期。这种"尽早失败"的机制极大提升了工具的健壮性。
 
-继续完善配置 Schema，当我们希望约束用户配置的model的格式，比如我们希望在模型名前加上提供商的前缀，比如 `openai/gpt-4o-mini`。
-
-我们只需要修改 `ModelId` 定义，添加一个正则表达式校验即可：
+接下来，我们继续完善配置 Schema。假设我们希望约束模型名的格式，要求在模型名前加上提供商的前缀，比如 `openai/gpt-4o-mini`。我们只需要修改 `ModelId` 定义，添加一个正则表达式校验：
 
 ```typescript
 // packages/opencode/src/config/config.ts
 import fs from "fs/promises"
 import z from "zod"
 
-// ========== 基础类型定义 ==========
-
-// 模型 ID 格式：provider/model (如 openai/gpt-4o-mini)
 const ModelId = z.string().regex(/^[^\/]+\/[^\/]+$/, "Invalid model ID format")
-
 ```
 
 执行代码：
+
 ```bash
-# 执行命令
 bun run src/config/config.ts
 ```
 
 会有如下报错：
-```bash
+
+```text
 ZodError: [
   {
     "origin": "string",
@@ -237,14 +222,18 @@ ZodError: [
 ]
 ```
 
-于是我们将`opencode.json`的内容修改为：
+于是我们将 `opencode.json` 的内容修改为：
+
 ```json
 {
   "model": "openai/gpt-4o-mini",
   "provider": "openai"
 }
 ```
-没有报错了，说明配置格式符合要求。可以预见的是，后续我们的Monorepo项目中，每个子包都会用到zod来校验类型。因此为了统一各个子包的zod版本，我们需要在根目录下安装zod依赖。并在catalog中添加zod的版本。接着再次回到packages/opencode目录下, 将zod的版本改为：`"zod": "catalog:"`。
+
+没有报错了，说明配置格式符合要求。
+
+明确了配置文件的格式，接下来我们需要解决另一个问题：这些配置文件应该存放在什么位置？
 
 ## 5.3 多层级配置合并策略
 
@@ -256,23 +245,27 @@ ZodError: [
 
 为了解决这个问题，我们需要引入多层级配置。在实际的 OpenCode 项目中，配置的来源分为以下几级（优先级从低到高）：
 
-1. **远程配置（Remote）**：存放在组织的 `.well-known/opencode`，用于定义组织的默认策略。
-2. **全局配置（Global）**：存放在用户配置目录下（如 `~/.config/opencode/opencode.json`），代表用户的默认偏好。
-3. **自定义配置（Custom）**：通过 `OPENCODE_CONFIG` 环境变量指定，自定义配置文件的路径。
-4. **项目配置（Project）**：存放在当前工作目录下（如 `./opencode.json`），针对特定项目的重写。
+1. **远程配置**：存放在组织的 `.well-known/opencode`，用于定义组织的默认策略。
+2. **全局配置**：存放在用户配置目录下（如 `~/.config/opencode/opencode.json`），代表用户的默认偏好。
+3. **自定义配置**：通过 `OPENCODE_CONFIG` 环境变量指定，自定义配置文件的路径。
+4. **项目配置**：存放在当前工作目录下（如 `./opencode.json`），针对特定项目的重写。
 5. **.opencode 目录配置**：存放在 `.opencode/` 目录下，包含 agents、commands、plugins 等子目录的配置。
-6. **内联配置（Inline）**：通过 `OPENCODE_CONFIG_CONTENT` 环境变量直接传入 JSON 字符串。
-7. **托管配置（Managed）**：存放在系统的全局共享目录（如 `/etc/opencode/opencode.json`），通常用于企业的强制管控策略，优先级最高。
+6. **内联配置**：通过 `OPENCODE_CONFIG_CONTENT` 环境变量直接传入 JSON 字符串。
+7. **托管配置**：存放在系统的全局共享目录（如 `/etc/opencode/opencode.json`），通常用于企业的强制管控策略，优先级最高。
 
-为什么托管配置的优先级最高？从本质上讲，这是一种企业管理的工程权衡。如果公司采购了特定模型的内网私有部署，托管配置能够无视用户的全局或项目级设置，强制重写请求目标，从而保障数据安全。
+> **本章实现**：为简化表述，本章我们先实现其中最核心的 4 个层级：全局配置、项目配置、环境变量指定配置、托管配置。远程配置、.opencode 目录配置、内联配置将在后续章节中逐步引入。
+
+那么问题来了：为什么托管配置的优先级最高？
+
+试想这样一个场景：公司采购了私有部署的大模型，要求所有内部项目必须使用内网地址。如果托管配置优先级不够高，员工可以在项目配置中覆盖它，导致数据泄露到公网。从本质上讲，这是一种企业管理的工程权衡——托管配置能够无视用户的全局或项目级设置，强制重写请求目标，从而保障数据安全。
 
 ### 5.3.2 跨平台路径管理
 
 开发跨平台 CLI 工具绕不开的一个隐性成本，在于需要处理不同操作系统的路径规范：
 
-- **Linux**：倾向于遵循 XDG Base Directory 规范，用户级配置通常放在 `~/.config` 目录下，系统级放在 `/etc` 目录。
+- **Linux**：遵循 XDG Base Directory 规范，用户级配置通常放在 `~/.config` 目录下，系统级放在 `/etc` 目录。
 - **Windows**：有一套专属的环境变量，用户级数据存放在 `APPDATA`，系统级数据存放在 `ProgramData`。
-- **macOS**：虽然底层是 Unix，但苹果有自己的应用沙盒惯例，系统级配置通常存放在 `/Library/Application Support`。
+- **macOS**：底层是 Unix，但苹果有自己的应用沙盒惯例，系统级配置通常存放在 `/Library/Application Support`。
 
 为了保证 CLI 工具的跨平台兼容性，我们需要在代码中抹平这些操作系统的底层差异。一种标准的做法是借助 `xdg-basedir` 库，它会自动处理不同平台的路径规范。
 
@@ -292,10 +285,9 @@ bun add xdg-basedir
 | xdgCache | 缓存目录 | ~/.cache | %LOCALAPPDATA% | ~/Library/Caches |
 | xdgState | 状态目录 | ~/.local/state | %LOCALAPPDATA% | ~/Library/Application Support |
 
-> 注意：xdg-basedir 官方文档明确指出"This package is meant for Linux"。在 Windows 和 macOS 下，它会尝试读取对应的 XDG 环境变量，如果未设置则回退到平台默认值。
+> 注意：xdg-basedir 官方文档明确指出 "This package is meant for Linux"。在 Windows 和 macOS 下，它会尝试读取对应的 XDG 环境变量，如果未设置则回退到平台默认值。
 
-
-接下来创建全局路径管理模块：
+接下来，我们创建全局路径管理模块：
 
 ```typescript
 // packages/opencode/src/global/index.ts
@@ -306,9 +298,6 @@ import os from "os"
 
 const app = "opencode"
 
-// xdg-basedir 会根据操作系统自动返回正确的路径
-// Linux/macOS: ~/.local/share/opencode, ~/.config/opencode, etc.
-// Windows: %LOCALAPPDATA%/opencode, %APPDATA%/opencode, etc.
 const data = path.join(xdgData!, app)
 const cache = path.join(xdgCache!, app)
 const config = path.join(xdgConfig!, app)
@@ -323,12 +312,11 @@ export namespace Global {
     bin: path.join(data, "bin"),
     log: path.join(data, "log"),
     cache,
-    config,  // 全局配置目录
+    config,
     state,
   }
 }
 
-// 确保目录存在
 await Promise.all([
   fs.mkdir(Global.Path.data, { recursive: true }),
   fs.mkdir(Global.Path.config, { recursive: true }),
@@ -338,16 +326,16 @@ await Promise.all([
 ])
 ```
 
-这里我们使用 `Promise.all` 并行创建所有必需的目录。`recursive: true` 选项意味着如果父目录不存在，会自动创建整个目录链。例如，创建 `~/.local/share/opencode/log` 时，即使 `~/.local/share/opencode` 不存在，也会一并创建。
-
-这种在模块初始化时确保目录存在的做法，可以避免在后续使用时频繁检查目录是否存在，简化了业务逻辑。
+这里我们使用 `Promise.all` 并行创建所有必需的目录。`recursive: true` 选项意味着如果父目录不存在，会自动创建整个目录链。这种在模块初始化时确保目录存在的做法，可以避免在后续使用时频繁检查目录是否存在，简化了业务逻辑。
 
 我们可以通过一个简单的验证来确认路径是否正确：
 
 ```bash
 # 在 Linux 上运行
 node -e "const {xdgData, xdgConfig} = require('xdg-basedir'); console.log('data:', xdgData); console.log('config:', xdgConfig);"
-# 输出（Linux）
+```
+
+```text
 data: /home/username/.local/share
 config: /home/username/.config
 ```
@@ -355,13 +343,15 @@ config: /home/username/.config
 ```bash
 # 在 Windows 上运行
 node -e "const {xdgData, xdgConfig} = require('xdg-basedir'); console.log('data:', xdgData); console.log('config:', xdgConfig);"
-# 输出（Windows）
+```
+
+```text
 data: C:\Users\Administrator\.local\share
 config: C:\Users\Administrator\.config
 ```
 可以看到，库自动处理了操作系统差异，我们只需要在此基础上拼接应用子目录即可。
 
-接下来，我们创建配置路径管理模块，专门处理配置文件的路径解析：
+接下来，我们创建配置路径管理模块，专门处理配置文件的路径解析，我们引入 `Global`模块中的`Global.Path` 来获取跨平台的全局配置路径:
 
 ```typescript
 // packages/opencode/src/config/paths.ts
@@ -370,7 +360,6 @@ import { parse as parseJsonc } from "jsonc-parser"
 import { Global } from "../global"
 
 export namespace ConfigPaths {
-  // 托管配置目录：企业级强制配置，优先级最高
   export function managedDir(): string {
     switch (process.platform) {
       case "darwin":
@@ -382,17 +371,14 @@ export namespace ConfigPaths {
     }
   }
 
-  // 全局配置文件路径
   export function globalConfigFile(): string {
     return path.join(Global.Path.config, "opencode.json")
   }
 
-  // 项目配置文件路径
   export function projectConfigFile(cwd: string): string {
     return path.join(cwd, "opencode.json")
   }
 
-  // 解析 JSONC 文本
   export function parseText(text: string, filepath: string) {
     const data = parseJsonc(text)
     return data
@@ -400,11 +386,13 @@ export namespace ConfigPaths {
 }
 ```
 
-### 5.3.3 深度合并（Deep Merge）的必要性
+有了跨平台的路径管理模块，接下来我们就可以实现配置加载的核心逻辑了。但在此之前，我们需要解决一个关键问题：多层级的配置应该如何合并？
 
-明确了优先级后，接下来我们需要处理配置合并逻辑。最容易想到的办法是使用 JavaScript 的对象展开运算符（Spread Operator）进行浅合并（Shallow Merge）：
+### 5.3.3 深度合并的必要性
 
-```ts
+要实现多层级配置的合并，最容易想到的办法是使用 JavaScript 的对象展开运算符进行浅合并，比如我们要把全局配置和项目配置合并起来：
+
+```typescript
 const mergedConfig = { ...globalConfig, ...projectConfig }
 ```
 
@@ -433,12 +421,14 @@ const mergedConfig = { ...globalConfig, ...projectConfig }
 
 如果使用浅合并，`projectConfig` 中的 `provider` 对象会直接替换掉 `globalConfig` 中的 `provider` 对象，导致 OpenAI 的配置完全丢失。
 
-为了解决这个问题，我们必须使用深度合并（Deep Merge）算法，递归地遍历对象的每一个属性并进行合并。这里我们可以借助工具库 `remeda` 提供的 `mergeDeep` 函数：
+为了解决这个问题，我们必须使用深度合并算法，递归地遍历对象的每一个属性并进行合并。这里我们可以借助工具库 `remeda` 提供的 `mergeDeep` 函数：
 
 ```bash
 cd packages/opencode
 bun add remeda
 ```
+
+接下来，我们在5.2节实现的基础上，继续完善配置加载逻辑，我们引入上一节实现的路径管理模块：`ConfigPaths`。
 
 ```typescript
 // packages/opencode/src/config/config.ts
@@ -448,7 +438,6 @@ import z from "zod"
 import { mergeDeep } from "remeda"
 import { ConfigPaths } from "./paths"
 
-// ========== Schema 定义 ==========
 const ModelId = z.string().regex(/^[^\/]+\/[^\/]+$/, "Invalid model ID format")
 
 const ConfigSchema = z.object({
@@ -459,14 +448,12 @@ const ConfigSchema = z.object({
 
 type Config = z.infer<typeof ConfigSchema>
 
-// 加载单个配置文件
 async function loadFile(filePath: string): Promise<Partial<Config>> {
   try {
     const content = await fs.readFile(filePath, "utf-8")
     const raw = ConfigPaths.parseText(content, filePath)
     return ConfigSchema.partial().parse(raw)
   } catch (error) {
-    // 文件不存在时返回空对象
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return {}
     }
@@ -474,35 +461,28 @@ async function loadFile(filePath: string): Promise<Partial<Config>> {
   }
 }
 
-// 加载并合并所有层级的配置
 export async function load(cwd: string = process.cwd()): Promise<Config> {
-  // 按优先级加载配置（从低到高）
   let result: Config = {}
 
-  // 1. 全局配置 (最低优先级)
   result = mergeDeep(result, await loadFile(ConfigPaths.globalConfigFile()))
 
-  // 2. 项目配置
   result = mergeDeep(result, await loadFile(ConfigPaths.projectConfigFile(cwd)))
 
-  // 3. 环境变量指定的配置
   if (process.env.OPENCODE_CONFIG) {
     result = mergeDeep(result, await loadFile(process.env.OPENCODE_CONFIG))
   }
 
-  // 4. 托管配置 (最高优先级，企业强制)
   result = mergeDeep(result, await loadFile(path.join(ConfigPaths.managedDir(), "opencode.json")))
 
-  // 验证最终配置
   return ConfigSchema.parse(result)
 }
 ```
 
-这里采用了最简单的实现方式：逐个加载并深度合并。配置加载完成后，通过 `ConfigSchema.parse()` 进行最终校验。
+`load函数`实现了优先级从低到高逐个加载全局配置、项目配置、环境变量指定配置、托管配置深度合并。配置加载完成后，通过 `ConfigSchema.parse()` 进行最终校验。
 
 ### 5.3.4 验证多层级合并
 
-让我们用实际输出来验证优先级是否正确。
+接下来，我们来验证优先级是否正确。
 
 首先创建全局配置：
 
@@ -544,8 +524,10 @@ console.log(config)
 
 ```bash
 bun run packages/opencode/src/config/test-load.ts
-# 输出:
-# { provider: "openai", model: "claude/claude-3-5-sonnet" }
+```
+
+```text
+{ provider: "openai", model: "claude/claude-3-5-sonnet" }
 ```
 
 可以看到：
@@ -584,65 +566,7 @@ opencode.json                                          opencode.json
 |------|------|----------|----------|
 | 配置格式 | JSONC | YAML、TOML | JSONC 兼容 JSON 生态，VS Code 用户熟悉；YAML 缩进敏感易出错 |
 | 类型验证 | Zod | JSON Schema、手写 | Zod 提供编译时+运行时双重保障；JSON Schema 写法繁琐 |
-| 合并策略 | 深度合并 | 浅合并 | 深度合并支持嵌套配置；浅合并会意外覆盖嵌套对象 |
-| 托管优先级 | 最高 | 可被覆盖 | 企业管控需求优先；但牺牲了开发者的调试灵活性 |
-| 路径管理 | xdg-basedir | 手动判断平台 | 库自动处理跨平台差异；手动判断容易遗漏边界情况 |
-
-## 5.6 实际项目对应
-
-OpenCode 的配置系统位于 `packages/opencode/src/config/`：
-
-```
-packages/opencode/src/config/
-├── config.ts              # 主配置逻辑（1459 行）
-├── paths.ts               # 路径管理（174 行）
-├── tui.ts                 # TUI 专属配置
-├── tui-schema.ts          # TUI 配置 Schema
-├── markdown.ts            # Markdown 渲染配置
-└── migrate-tui-config.ts  # 配置迁移
-```
-
-实际项目在此基础上还支持：
-- 远程配置（`.well-known/opencode`）
-- 配置热重载（文件监听）
-- 配置版本迁移
-- `{env:VAR}` 和 `{file:path}` 变量替换
-- 插件、Agent、MCP 等高级配置
-
-## 5.7 本章文件结构
-
-完成本章后，你的项目结构应该是：
-
-```
-packages/opencode/
-├── src/
-│   ├── index.ts              # 第 4 章的 CLI 入口
-│   ├── global/
-│   │   └── index.ts          # 全局路径管理
-│   └── config/
-│       ├── config.ts         # 配置加载逻辑
-│       ├── paths.ts          # 配置路径管理
-│       └── test-load.ts      # 测试脚本
-├── opencode.json             # 项目配置文件
-├── package.json
-└── tsconfig.json
-```
-
----
-
-## 本章小结
-
-我们从"用户在多个项目间切换"这个真实场景出发，逐步推导出多层级配置系统的设计：
-
-1. **单文件配置** → JSONC 支持注释，Zod 提供类型验证
-2. **多层级合并** → 全局/项目/环境变量/托管，优先级递增
-3. **跨平台路径** → xdg-basedir 自动处理操作系统差异
-4. **设计权衡** → 托管配置优先级最高，牺牲调试灵活性换取企业管控能力
-
-现在我们可以得出一个结论：配置系统不是一个简单的"读文件"操作，而是一个需要考虑多层级、跨平台、类型安全、企业管控的复杂系统。
-
-这个配置系统将成为后续所有功能的基础设施。
-
----
+| 合并策略 | 深度合并 | 浅合并 | 深度合并保留嵌套结构；浅合并会丢失数据 |
+| 路径管理 | xdg-basedir | 手写跨平台逻辑 | 库封装了平台差异；手写逻辑维护成本高 |
 
 **下一章预告**: 第 6 章 - 大模型 API 接入，我们将使用这个配置系统来管理 AI 模型的选择和 API 密钥。
