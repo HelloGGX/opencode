@@ -1,6 +1,6 @@
 import { useFilteredList } from "@opencode-ai/ui/hooks"
 import { useSpring } from "@opencode-ai/ui/motion-spring"
-import { createEffect, on, Component, Show, onCleanup, Switch, Match, createMemo, createSignal } from "solid-js"
+import { createEffect, on, Component, Show, onCleanup, createMemo, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useLocal } from "@/context/local"
 import { selectionFromLines, type SelectedLineRange, useFile } from "@/context/file"
@@ -27,7 +27,6 @@ import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Select } from "@opencode-ai/ui/select"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
-import { DialogSelectModelUnpaid } from "@/components/dialog-select-model-unpaid"
 import { useProviders } from "@/hooks/use-providers"
 import { useCommand } from "@/context/command"
 import { Persist, persisted } from "@/utils/persist"
@@ -36,6 +35,7 @@ import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionTabs } from "@/pages/session/helpers"
+import { promptEnabled, promptProbe } from "@/testing/prompt"
 import { createTextFragment, getCursorPosition, setCursorPosition, setRangeEdge } from "./prompt-input/editor-dom"
 import { createPromptAttachments } from "./prompt-input/attachments"
 import { ACCEPTED_FILE_TYPES } from "./prompt-input/files"
@@ -243,6 +243,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       },
   )
   const working = createMemo(() => status()?.type !== "idle")
+  const tip = () => {
+    if (working()) {
+      return (
+        <div class="flex items-center gap-2">
+          <span>{language.t("prompt.action.stop")}</span>
+          <span class="text-icon-base text-12-medium text-[10px]!">{language.t("common.key.esc")}</span>
+        </div>
+      )
+    }
+
+    return (
+      <div class="flex items-center gap-2">
+        <span>{language.t("prompt.action.send")}</span>
+        <Icon name="enter" size="small" class="text-icon-base" />
+      </div>
+    )
+  }
   const imageAttachments = createMemo(() =>
     prompt.current().filter((part): part is ImageAttachmentPart => part.type === "image"),
   )
@@ -554,6 +571,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       const open = recent()
       const seen = new Set(open)
       const pinned: AtOption[] = open.map((path) => ({ type: "file", path, display: path, recent: true }))
+      if (!query.trim()) return [...agents, ...pinned]
       const paths = await files.searchFilesAndDirectories(query)
       const fileOptions: AtOption[] = paths
         .filter((path) => !seen.has(path))
@@ -604,18 +622,20 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const handleSlashSelect = (cmd: SlashCommand | undefined) => {
     if (!cmd) return
+    promptProbe.select(cmd.id)
     closePopover()
+    const images = imageAttachments()
 
     if (cmd.type === "custom") {
       const text = `/${cmd.trigger} `
       setEditorText(text)
-      prompt.set([{ type: "text", content: text, start: 0, end: text.length }], text.length)
+      prompt.set([{ type: "text", content: text, start: 0, end: text.length }, ...images], text.length)
       focusEditorEnd()
       return
     }
 
     clearEditor()
-    prompt.set([{ type: "text", content: "", start: 0, end: 0 }], 0)
+    prompt.set([...DEFAULT_PROMPT, ...images], 0)
     command.trigger(cmd.id, "slash")
   }
 
@@ -691,6 +711,20 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       element?.scrollIntoView({ block: "nearest", behavior: "smooth" })
     })
   })
+
+  if (promptEnabled()) {
+    createEffect(() => {
+      promptProbe.set({
+        popover: store.popover,
+        slash: {
+          active: slashActive() ?? null,
+          ids: slashFlat().map((cmd) => cmd.id),
+        },
+      })
+    })
+
+    onCleanup(() => promptProbe.clear())
+  }
 
   const selectPopoverActive = () => {
     if (store.popover === "at") {
@@ -1010,7 +1044,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return true
   }
 
-  const { addAttachment, removeAttachment, handlePaste } = createPromptAttachments({
+  const { addAttachments, removeAttachment, handlePaste } = createPromptAttachments({
     editor: () => editorRef,
     isDialogActive: () => !!dialog.active,
     setDraggingType: (type) => setStore("draggingType", type),
@@ -1208,6 +1242,20 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     // Note: Shift+Enter is handled earlier, before IME check
     if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault()
+      if (event.repeat) return
+      if (
+        working() &&
+        prompt
+          .current()
+          .map((part) => ("content" in part ? part.content : ""))
+          .join("")
+          .trim().length === 0 &&
+        imageAttachments().length === 0 &&
+        commentCount() === 0
+      ) {
+        return
+      }
       handleSubmit(event)
     }
   }
@@ -1296,6 +1344,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               autocapitalize={store.mode === "normal" ? "sentences" : "off"}
               autocorrect={store.mode === "normal" ? "on" : "off"}
               spellcheck={store.mode === "normal"}
+              inputMode="text"
+              // @ts-expect-error
+              autocomplete="off"
               onInput={handleInput}
               onPaste={handlePaste}
               onCompositionStart={handleCompositionStart}
@@ -1336,36 +1387,18 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               accept={ACCEPTED_FILE_TYPES.join(",")}
               class="hidden"
               onChange={(e) => {
-                const file = e.currentTarget.files?.[0]
-                if (file) void addAttachment(file)
+                const list = e.currentTarget.files
+                if (list) void addAttachments(Array.from(list))
                 e.currentTarget.value = ""
               }}
             />
 
             <div class="flex items-center gap-1 pointer-events-auto">
-              <Tooltip
-                placement="top"
-                inactive={!prompt.dirty() && !working()}
-                value={
-                  <Switch>
-                    <Match when={working()}>
-                      <div class="flex items-center gap-2">
-                        <span>{language.t("prompt.action.stop")}</span>
-                        <span class="text-icon-base text-12-medium text-[10px]!">{language.t("common.key.esc")}</span>
-                      </div>
-                    </Match>
-                    <Match when={true}>
-                      <div class="flex items-center gap-2">
-                        <span>{language.t("prompt.action.send")}</span>
-                        <Icon name="enter" size="small" class="text-icon-base" />
-                      </div>
-                    </Match>
-                  </Switch>
-                }
-              >
+              <Tooltip placement="top" inactive={!prompt.dirty() && !working()} value={tip()}>
                 <IconButton
                   data-action="prompt-submit"
                   type="submit"
@@ -1464,11 +1497,15 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                           size="normal"
                           class="min-w-0 max-w-[320px] text-13-regular text-text-base group"
                           style={control()}
-                          onClick={() => dialog.show(() => <DialogSelectModelUnpaid model={local.model} />)}
+                          onClick={() => {
+                            void import("@/components/dialog-select-model-unpaid").then((x) => {
+                              dialog.show(() => <x.DialogSelectModelUnpaid model={local.model} />)
+                            })
+                          }}
                         >
                           <Show when={local.model.current()?.provider?.id}>
                             <ProviderIcon
-                              id={local.model.current()!.provider.id}
+                              id={local.model.current()?.provider?.id ?? ""}
                               class="size-4 shrink-0 opacity-40 group-hover:opacity-100 transition-opacity duration-150"
                               style={{ "will-change": "opacity", transform: "translateZ(0)" }}
                             />
@@ -1500,7 +1537,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       >
                         <Show when={local.model.current()?.provider?.id}>
                           <ProviderIcon
-                            id={local.model.current()!.provider.id}
+                            id={local.model.current()?.provider?.id ?? ""}
                             class="size-4 shrink-0 opacity-40 group-hover:opacity-100 transition-opacity duration-150"
                             style={{ "will-change": "opacity", transform: "translateZ(0)" }}
                           />
