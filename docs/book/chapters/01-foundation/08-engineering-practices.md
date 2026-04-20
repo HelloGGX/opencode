@@ -92,6 +92,40 @@ EditorConfig 是一种编辑器无关的标准，大多数现代 IDE（如 VSCod
 
 Husky是一个强大的Git钩子管理工具，可以在Git操作（如提交、推送）时自动执行特定脚本，确保代码质量。
 
+```mermaid
+graph LR
+    subgraph GitFlow["Git 工作流"]
+        Code[编写代码]
+        Add[git add]
+        Commit[git commit]
+        Push[git push]
+    end
+
+    subgraph Husky["Husky 钩子"]
+        PreCommit[pre-commit<br/>代码格式化]
+        PrePush[pre-push<br/>- Bun 版本检查<br/>- TypeScript 类型检查]
+    end
+
+    Code --> Add
+    Add --> Commit
+    Commit -.触发.-> PreCommit
+    PreCommit -->|通过| Push
+    PreCommit -->|失败| Error1[阻止提交]
+    Push -.触发.-> PrePush
+    PrePush -->|通过| Success[推送成功]
+    PrePush -->|失败| Error2[阻止推送]
+
+    classDef gitStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef huskyStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef errorStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef successStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class Code,Add,Commit,Push gitStyle
+    class PreCommit,PrePush huskyStyle
+    class Error1,Error2 errorStyle
+    class Success successStyle
+```
+
 安装Husky：
 
 ```bash
@@ -192,6 +226,45 @@ Cached:    1 cached, 1 total
 - **OpenCode集成工作流** (`opencode.yml`): 集成AI辅助开发工具
 
 下面我们重点讲解其中2个工作流：测试工作流和类型检查工作流。后续的工作流我们会在需要的时候再进行补充和迭代。
+
+```mermaid
+graph TB
+    subgraph Triggers["触发条件"]
+        Push[push to dev]
+        PR[Pull Request]
+        Manual[手动触发]
+    end
+
+    subgraph Workflows["工作流"]
+        Test["test.yml<br/>多平台测试<br/>Linux + Windows"]
+        Typecheck["typecheck.yml<br/>TypeScript 类型检查"]
+        Publish["publish.yml<br/>版本管理 + 发布"]
+        OpenCode["opencode.yml<br/>AI 辅助开发"]
+    end
+
+    subgraph SharedAction["共享 Action"]
+        SetupBun[".github/actions/setup-bun<br/>- 缓存挂载<br/>- Bun 安装<br/>- 依赖安装"]
+    end
+
+    Push --> Test
+    Push --> Typecheck
+    PR --> Test
+    PR --> Typecheck
+    Manual --> Publish
+    Manual --> OpenCode
+
+    Test --> SetupBun
+    Typecheck --> SetupBun
+    Publish --> SetupBun
+
+    classDef triggerStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef workflowStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef actionStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class Push,PR,Manual triggerStyle
+    class Test,Typecheck,Publish,OpenCode workflowStyle
+    class SetupBun actionStyle
+```
 
 ### 8.3.2 创建GitHub Actions配置目录
 
@@ -298,6 +371,43 @@ EOF
 如果分别为 Linux 和 Windows 编写独立的 Workflow，不仅会引入大量重复配置，还会在后续维护中不断放大改动成本，这显然违背了 DRY 原则。为了解决这一问题，GitHub Actions 提供了 matrix（矩阵）策略，使我们能够在保留统一执行流程的前提下，对不同运行环境进行参数化配置。
 
 在这种模式下，测试流程本身只需要定义一次，而操作系统、运行节点、依赖安装方式以及具体的测试命令等平台差异，则通过 matrix 作为配置项传入。GitHub Actions 会基于 matrix 中的每一组配置，自动生成并执行对应的测试任务。
+
+```mermaid
+graph TB
+    subgraph Matrix["Matrix 策略"]
+        Linux["Linux 配置<br/>- host: ubuntu-latest<br/>- playwright: --with-deps<br/>- workdir: .<br/>- command: bun turbo test"]
+        Windows["Windows 配置<br/>- host: windows-latest<br/>- playwright: 标准安装<br/>- workdir: packages/app<br/>- command: bun test:e2e:local"]
+    end
+
+    subgraph Jobs["并行执行"]
+        LinuxJob["Linux Job<br/>ubuntu-latest"]
+        WindowsJob["Windows Job<br/>windows-latest"]
+    end
+
+    subgraph Steps["统一步骤"]
+        Checkout[Checkout 代码]
+        Setup[Setup Bun]
+        Playwright[安装 Playwright]
+        Test[运行测试]
+    end
+
+    Linux --> LinuxJob
+    Windows --> WindowsJob
+
+    LinuxJob --> Checkout
+    WindowsJob --> Checkout
+    Checkout --> Setup
+    Setup --> Playwright
+    Playwright --> Test
+
+    classDef matrixStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef jobStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef stepStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class Linux,Windows matrixStyle
+    class LinuxJob,WindowsJob jobStyle
+    class Checkout,Setup,Playwright,Test stepStyle
+```
 
 接下来我们创建完整的 test.yml 配置文件：
 
@@ -459,6 +569,44 @@ git push origin dev
 ## 8.4 本章小结
 
 本章我们完成了工程化实践的配置，建立了一套完整的代码质量和持续集成体系。
+
+```mermaid
+graph TB
+    subgraph Quality["代码质量保障"]
+        Prettier["Prettier<br/>统一代码格式"]
+        EditorConfig["EditorConfig<br/>编辑器配置"]
+        Husky["Husky<br/>Git 钩子管理"]
+    end
+
+    subgraph CI["持续集成体系"]
+        SetupBun["setup-bun Action<br/>环境准备 + 缓存"]
+        Test["test.yml<br/>多平台测试<br/>Linux + Windows"]
+        Typecheck["typecheck.yml<br/>类型检查"]
+    end
+
+    subgraph Benefits["最终效果"]
+        B1["代码风格一致"]
+        B2["版本兼容性保证"]
+        B3["跨平台兼容"]
+        B4["自动化流程"]
+    end
+
+    Prettier --> B1
+    EditorConfig --> B1
+    Husky --> B2
+    SetupBun --> Test
+    SetupBun --> Typecheck
+    Test --> B3
+    Typecheck --> B4
+
+    classDef qualityStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef ciStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef benefitStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class Prettier,EditorConfig,Husky qualityStyle
+    class SetupBun,Test,Typecheck ciStyle
+    class B1,B2,B3,B4 benefitStyle
+```
 
 **代码质量保障**
 

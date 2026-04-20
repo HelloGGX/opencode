@@ -237,6 +237,35 @@ const config = loadConfig()
 
 我们需要对系统进行模块化拆分。
 
+```mermaid
+graph TB
+    subgraph Before["重构前：单文件架构"]
+        IndexBefore["index.ts<br/>- 配置解析<br/>- CLI 路由<br/>- AI 调用<br/>- 错误处理<br/>高耦合，难以维护"]
+    end
+
+    subgraph After["重构后：分层架构"]
+        IndexAfter["index.ts<br/>- Yargs 初始化<br/>- 命令注册"]
+        Config["config/config.ts<br/>- 配置读取<br/>- 默认值<br/>- 容错处理"]
+        Provider["provider/provider.ts<br/>- AI 调用抽象<br/>- 多模型支持<br/>- 错误处理"]
+        Command["cli/cmd/run.ts<br/>- 命令定义<br/>- 参数验证<br/>- 业务编排"]
+    end
+
+    IndexBefore -.重构.-> IndexAfter
+    IndexBefore -.重构.-> Config
+    IndexBefore -.重构.-> Provider
+    IndexBefore -.重构.-> Command
+
+    IndexAfter --> Command
+    Command --> Config
+    Command --> Provider
+
+    classDef beforeStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef afterStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class IndexBefore beforeStyle
+    class IndexAfter,Config,Provider,Command afterStyle
+```
+
 ### 6.5.1 剥离配置模块
 
 在 `packages/opencode/src/config/config.ts` 中封装配置读取逻辑，并补充基本的容错处理：
@@ -292,6 +321,42 @@ export async function chat(model: string, prompt: string): Promise<string> {
   return text
 }
 
+```
+
+**Provider 抽象层架构：**
+
+```mermaid
+graph TB
+    subgraph UserLayer["用户层"]
+        CLI[CLI 命令<br/>opencode run]
+    end
+
+    subgraph AbstractionLayer["抽象层"]
+        ProviderAPI["Provider API<br/>chat(model, prompt)"]
+        AISDK["@ai-sdk<br/>generateText()"]
+    end
+
+    subgraph ProviderLayer["提供商层"]
+        OpenAI["@ai-sdk/openai<br/>GPT-4, GPT-3.5"]
+        Anthropic["@ai-sdk/anthropic<br/>Claude 3.5"]
+        Google["@ai-sdk/google<br/>Gemini"]
+        Others["其他提供商<br/>20+ 模型"]
+    end
+
+    CLI --> ProviderAPI
+    ProviderAPI --> AISDK
+    AISDK --> OpenAI
+    AISDK --> Anthropic
+    AISDK --> Google
+    AISDK --> Others
+
+    classDef userStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef abstractStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef providerStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class CLI userStyle
+    class ProviderAPI,AISDK abstractStyle
+    class OpenAI,Anthropic,Google,Others providerStyle
 ```
 
 ### 6.5.3 独立命令文件与透传支持
@@ -361,8 +426,49 @@ yargs(hideBin(process.argv))
 
 你看，上述的执行链路中潜藏着三个核心痛点：
 
+```mermaid
+graph TB
+    subgraph Current[“当前实现”]
+        User1[用户: 帮我写快速排序]
+        AI1[AI: 返回代码]
+        User2[用户: 优化一下性能]
+        AI2[AI: 不知道上下文<br/>无法优化]
+
+        User1 --> AI1
+        User2 --> AI2
+    end
+
+    subgraph Problems[“三大痛点”]
+        P1[“1. 记忆缺失<br/>每次请求独立<br/>无法多轮对话”]
+        P2[“2. 终端阻塞<br/>等待响应时假死<br/>无法中断”]
+        P3[“3. 异常处理粗糙<br/>Token 限制<br/>网络超时”]
+    end
+
+    subgraph Solution[“解决方案”]
+        S1[“会话管理<br/>Session”]
+        S2[“流式输出<br/>Streaming”]
+        S3[“错误处理<br/>Error Handling”]
+    end
+
+    AI2 -.问题.-> P1
+    AI2 -.问题.-> P2
+    AI2 -.问题.-> P3
+
+    P1 --> S1
+    P2 --> S2
+    P3 --> S3
+
+    classDef currentStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef problemStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef solutionStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class User1,AI1,User2,AI2 currentStyle
+    class P1,P2,P3 problemStyle
+    class S1,S2,S3 solutionStyle
+```
+
 1. **记忆缺失**：由于 HTTP 请求的无状态特性，每次执行 `run` 命令都是独立的上下文，模型无法结合历史输入进行多轮对话推演。
 2. **终端阻塞**：API 的网络响应通常有数秒延迟。在这段时间内，终端处于假死状态，未向用户传递任何进行中的反馈。
 3. **异常处理粗糙**：当触及 Token 限制或网络超时时，系统仅粗暴地输出错误堆栈。
 
-要真正让大模型协助我们编程，需要建立持久化的“会话（Session）”机制。在下一章，我们将引入本地 SQLite 数据库，探讨如何实现多轮对话的上下文留存。
+要真正让大模型协助我们编程，需要建立持久化的”会话（Session）”机制。在下一章，我们将引入本地 SQLite 数据库，探讨如何实现多轮对话的上下文留存。

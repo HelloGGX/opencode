@@ -98,6 +98,42 @@ main();
 
 这意味着，智能体的行为不再是一次性的，而是一个持续的、有反馈的过程。为了实现这种持续性，我们必须引入一个最基础的结构：循环。
 
+```mermaid
+graph TB
+    subgraph Simple["简单调用（一次性）"]
+        Input1[用户输入:<br/>帮我写快速排序]
+        LLM1[LLM 处理]
+        Output1[输出代码]
+        Input1 --> LLM1 --> Output1
+    end
+
+    subgraph Complex["复杂任务（需要循环）"]
+        Input2[用户输入:<br/>修复类型报错]
+        Step1[1. 查看报错信息]
+        Step2[2. 读取相关文件]
+        Step3[3. 修改代码]
+        Step4[4. 验证是否修复]
+        Decision{还有报错?}
+        Done[任务完成]
+
+        Input2 --> Step1
+        Step1 --> Step2
+        Step2 --> Step3
+        Step3 --> Step4
+        Step4 --> Decision
+        Decision -->|是| Step1
+        Decision -->|否| Done
+    end
+
+    classDef simpleStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef complexStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef decisionStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+
+    class Input1,LLM1,Output1 simpleStyle
+    class Input2,Step1,Step2,Step3,Step4,Done complexStyle
+    class Decision decisionStyle
+```
+
 为了理解这一点，我们可以试着写一个最简陋的 Agent。为了让它能够不断地检查环境并做出反应，最直观的代码可能是这样的：
 
 ```typescript
@@ -148,7 +184,7 @@ class SimpleAgent {
       targetCondition: 10
     };
   }
-  
+
   // 后续逻辑
 }
 ```
@@ -172,6 +208,27 @@ class SimpleAgent {
 1. 感知：从环境中获取信息，更新内部认知。
 2. 决策：基于感知到的信息和当前目标，选择下一个动作。
 3. 行动：执行动作，产生副作用，改变环境。
+
+```mermaid
+graph LR
+    subgraph PDA["PDA 循环"]
+        Perceive["感知 Perceive<br/>- 读取环境状态<br/>- 抽象为可理解数据"]
+        Decide["决策 Decide<br/>- 基于感知做判断<br/>- 选择下一个动作"]
+        Act["行动 Act<br/>- 执行动作<br/>- 产生副作用<br/>- 改变环境"]
+    end
+
+    Perceive --> Decide
+    Decide --> Act
+    Act --> Perceive
+
+    classDef perceiveStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef decideStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef actStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class Perceive perceiveStyle
+    class Decide decideStyle
+    class Act actStyle
+```
 
 ### 感知
 
@@ -416,6 +473,8 @@ main();
 
 第三个问题是状态的易失性。所有的上下文都保存在内存变量中。一旦用户关闭终端，或者程序因网络波动崩溃，所有的对话历史、AI 对项目结构的理解瞬间归零。
 
+
+
 为了解决这些问题，我们需要对上述代码重新进行架构设计。
 
 首先，为了解决耦合问题，我们将「大脑」与「肢体」分离。Core 层只负责思考和决策，不负责显示；UI 层只负责渲染，不负责逻辑。两者之间不能直接调用，必须通过事件或消息进行通信。这样，Core 层就不再依赖于 console.log，而是发布一个 MessageUpdated 事件，无论是 TUI 还是 Web UI，监听到这个事件后自行决定如何渲染。
@@ -424,6 +483,30 @@ main();
 
 最后，为了解决易失性，我们需要引入一个持久化的基础设施层，实时将内存中的状态同步到硬盘上。
 
+```mermaid
+graph TB
+    subgraph Problems["SimpleAgent 的三大局限"]
+        P1["1. 交互阻塞<br/>LLM 调用时程序假死<br/>无法中断/修正"]
+        P2["2. 能力耦合<br/>console.log 绑定 UI<br/>无法多端复用"]
+        P3["3. 状态易失<br/>内存存储<br/>崩溃后全部丢失"]
+    end
+
+    subgraph Solutions["解决方案"]
+        S1["异步事件驱动<br/>while 循环 → 事件总线<br/>非阻塞执行"]
+        S2["Core/UI 分离<br/>Core 发布事件<br/>UI 监听渲染"]
+        S3["持久化基础设施<br/>内存状态 → 磁盘<br/>实时同步"]
+    end
+
+    P1 --> S1
+    P2 --> S2
+    P3 --> S3
+
+    classDef problemStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef solutionStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class P1,P2,P3 problemStyle
+    class S1,S2,S3 solutionStyle
+```
 ---
 
 ## 1.5 OpenCode 架构：分层与解耦
@@ -534,65 +617,7 @@ Ext --> AI
 **6. AI 提供商层 (AI Provider)**
 该层基于 @ai-sdk 抽象层，提供对 20+ 种 AI 模型的统一访问接口。支持 OpenAI、Anthropic、Google 等主流模型，未来还计划整合其他厂商的模型。通过插件化设计，允许开发者根据需求自定义模型配置和调用逻辑。
 
-
-
 ---
-
-## 1.6 实际项目对应
-
-OpenCode 的实际代码结构与架构图完全对应，位于 `packages/opencode/src/` 目录：
-
-### 用户界面层
-```
-packages/opencode/src/cli/cmd/tui/    # TUI 终端界面
-packages/app/                          # Web 应用
-packages/desktop/                      # Tauri 桌面应用
-```
-
-### 通信层
-```
-packages/opencode/src/server/
-├── server.ts                          # HTTP Server (Hono)
-├── routes/                            # API 路由
-└── event.ts                           # SSE 事件定义
-```
-
-### 核心业务层
-```
-packages/opencode/src/
-├── session/                           # 会话管理 (16个文件)
-├── agent/                             # 代理系统
-├── permission/                        # 权限控制
-├── tool/                              # 工具系统 (24个工具)
-├── bus/                               # 事件总线
-└── question/                          # 交互问答
-```
-
-### 基础设施层
-```
-packages/opencode/src/
-├── storage/                           # 存储抽象 (5个文件)
-├── config/                            # 配置系统 (6个文件)
-├── project/                           # 实例管理
-└── snapshot/                          # 快照系统
-```
-
-### 扩展层
-```
-packages/opencode/src/
-├── lsp/                               # LSP 集成
-├── mcp/                               # MCP 协议
-├── skill/                             # 技能系统
-└── plugin/                            # 插件系统
-```
-
-### AI 提供商层
-```
-packages/opencode/src/provider/        # Provider 抽象 (5个文件)
-```
-
----
-
 ## 本章小结
 
 通过本章，我们理解了：

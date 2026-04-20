@@ -1,4 +1,4 @@
-# 第二章：环境搭建与CLI实操
+# 第2章：环境搭建与CLI实操
 
 在第一章中，我们深入探讨了AI辅助开发工具的全景架构与设计哲学，对现代化CLI工具的架构设计有了全面的理解。从本章开始，我们将从理论走向实践，通过亲手搭建开发环境来深化对这套架构的理解。本章将以业界成熟的Monorepo项目为蓝本，带领读者完成从零到一的环境搭建工作。
 
@@ -85,6 +85,35 @@ $ git commit --allow-empty -m "Initial commit"
 - webpack/esbuild（打包工具）
 
 每个工具都有自己的配置文件，版本兼容性也是个头疼的问题。Bun将这些功能集成到一个工具里。
+
+```mermaid
+graph TB
+    subgraph Traditional["传统 Node.js 工具链"]
+        NPM["npm/yarn/pnpm<br/>包管理"]
+        TSC["tsc<br/>TypeScript 编译"]
+        Jest["jest<br/>测试框架"]
+        Webpack["webpack/esbuild<br/>打包工具"]
+        Problem["问题:<br/>- 多个配置文件<br/>- 版本兼容性<br/>- 工具碎片化"]
+    end
+
+    subgraph Bun["Bun 一体化方案"]
+        BunAll["Bun<br/>- 包管理 ✓<br/>- 原生 TS 支持 ✓<br/>- 内置测试 ✓<br/>- 内置打包 ✓"]
+        Benefit["优势:<br/>- 单一工具<br/>- 统一配置<br/>- 更快的性能"]
+    end
+
+    NPM --> Problem
+    TSC --> Problem
+    Jest --> Problem
+    Webpack --> Problem
+
+    BunAll --> Benefit
+
+    classDef traditionalStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef bunStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class NPM,TSC,Jest,Webpack,Problem traditionalStyle
+    class BunAll,Benefit bunStyle
+```
 
 我们用一个例子来验证。创建一个TypeScript文件：
 
@@ -221,6 +250,45 @@ cat bunfig.toml
 
 Bun提供了便捷的项目初始化命令bun init，它可以快速创建符合最佳实践的package.json基础配置。在Monorepo项目中，我们可以使用bun init作为起点，然后在其基础上添加工作区配置。
 
+```mermaid
+graph TB
+    subgraph Problem["问题：单仓库的局限"]
+        P1["CLI 工具"]
+        P2["Web 界面"]
+        P3["VSCode 插件"]
+        P4["代码重复<br/>版本不一致<br/>测试困难"]
+    end
+
+    subgraph Solution["解决方案：Monorepo"]
+        Root["根目录 package.json<br/>- workspaces<br/>- catalog<br/>- overrides"]
+        Sub1["packages/opencode<br/>CLI 工具"]
+        Sub2["packages/web<br/>Web 界面"]
+        Sub3["packages/vscode<br/>VSCode 插件"]
+        Shared["共享依赖<br/>统一版本<br/>代码复用"]
+    end
+
+    P1 -.问题.-> P4
+    P2 -.问题.-> P4
+    P3 -.问题.-> P4
+
+    Root --> Sub1
+    Root --> Sub2
+    Root --> Sub3
+    Sub1 --> Shared
+    Sub2 --> Shared
+    Sub3 --> Shared
+
+    classDef problemStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef solutionStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef rootStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef sharedStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+
+    class P1,P2,P3,P4 problemStyle
+    class Sub1,Sub2,Sub3 solutionStyle
+    class Root rootStyle
+    class Shared sharedStyle
+```
+
 首先，使用bun init初始化项目基础配置：
 
 ```bash
@@ -312,6 +380,42 @@ cat package.json
 #### 解决问题3：统一依赖版本
 
 Bun提供了"目录版本控制"的特性：catalog ，只需在根目录定义一次依赖版本，子包通过`catalog:`协议引用，实现依赖版本的统一控制和更简洁的依赖树结构，从而提升整个工作区的开发体验与可维护性。
+
+```mermaid
+graph TB
+    subgraph Root["根目录 package.json"]
+        Catalog["catalog:<br/>@types/bun: 1.3.8<br/>typescript: 5.8.2"]
+        Overrides["overrides:<br/>强制使用 catalog 版本"]
+    end
+
+    subgraph Packages["子包"]
+        P1["packages/opencode<br/>@types/bun: catalog:<br/>typescript: catalog:"]
+        P2["packages/web<br/>@types/bun: catalog:<br/>typescript: catalog:"]
+        P3["packages/vscode<br/>@types/bun: catalog:<br/>typescript: catalog:"]
+    end
+
+    subgraph Result["结果"]
+        Unified["所有子包使用相同版本<br/>避免版本冲突<br/>简化依赖管理"]
+    end
+
+    Catalog --> P1
+    Catalog --> P2
+    Catalog --> P3
+    Overrides -.强制.-> P1
+    Overrides -.强制.-> P2
+    Overrides -.强制.-> P3
+    P1 --> Unified
+    P2 --> Unified
+    P3 --> Unified
+
+    classDef rootStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef packageStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef resultStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class Catalog,Overrides rootStyle
+    class P1,P2,P3 packageStyle
+    class Unified resultStyle
+```
 
 ```json
 {
@@ -487,6 +591,39 @@ cd packages/opencode && bun run build
 2. **无法并行**：util和plugin可以并行构建，但手动管理很难实现
 3. **重复构建**：修改util后，需要重新构建所有依赖它的包
 
+```mermaid
+graph TB
+    subgraph Without["没有 Turbo：手动管理"]
+        M1[手动构建 util]
+        M2[手动构建 plugin]
+        M3[手动构建 opencode]
+        M4["问题:<br/>- 顺序错误导致失败<br/>- 无法并行<br/>- 重复构建"]
+        M1 --> M2 --> M3
+        M3 -.问题.-> M4
+    end
+
+    subgraph With["有 Turbo：智能编排"]
+        T1[util 构建]
+        T2[plugin 构建]
+        T3[opencode 构建]
+        Cache["缓存层<br/>未变更包直接复用"]
+        T1 --> T2
+        T1 --> T3
+        T2 --> T3
+        Cache -.加速.-> T1
+        Cache -.加速.-> T2
+        Cache -.加速.-> T3
+    end
+
+    classDef problemStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef turboStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef cacheStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+
+    class M1,M2,M3,M4 problemStyle
+    class T1,T2,T3 turboStyle
+    class Cache cacheStyle
+```
+
 Turbo作为一款专为这类场景设计的构建编排工具，正好能有效缓解这些痛点，它的核心优势体现在几个关键方面：通过增量构建机制，只针对发生变化的包及其下游依赖进行处理，从而大幅压缩整体构建时长；借助智能缓存功能，自动存储并复用未改动包的构建产物，避免无谓的重复计算；此外，它还能精细管理任务间的依赖关系，确保所有操作按逻辑顺序顺畅执行；最后，利用并行执行策略，对那些相互独立的子任务自动分配多核CPU资源，进一步提升效率。
 
 首先安装Turbo：
@@ -641,6 +778,33 @@ EOF
 ## 2.4 本章小结
 
 本章我们完成了OpenCode项目开发环境的基础搭建，主要内容包括：
+
+```mermaid
+graph TB
+    subgraph Setup["本章完成的配置"]
+        Git["Git 版本控制<br/>- 初始化仓库<br/>- 配置用户信息"]
+        Bun["Bun 环境<br/>- 安装 Bun<br/>- bunfig.toml 配置<br/>- exact 版本锁定"]
+        Monorepo["Monorepo 架构<br/>- workspaces<br/>- catalog 版本统一<br/>- overrides 强制版本"]
+        Turbo["Turbo 构建系统<br/>- 依赖图管理<br/>- 增量构建<br/>- 并行执行"]
+        TS["TypeScript 配置<br/>- @tsconfig/bun 预设<br/>- 根目录 + 子包继承"]
+    end
+
+    subgraph Result["最终项目结构"]
+        Root["opencode/<br/>├── package.json<br/>├── turbo.json<br/>├── tsconfig.json<br/>├── bunfig.toml<br/>└── packages/<br/>    └── opencode/<br/>        ├── package.json<br/>        ├── tsconfig.json<br/>        └── src/index.ts"]
+    end
+
+    Git --> Monorepo
+    Bun --> Monorepo
+    Monorepo --> Turbo
+    Turbo --> TS
+    TS --> Root
+
+    classDef setupStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef resultStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class Git,Bun,Monorepo,Turbo,TS setupStyle
+    class Root resultStyle
+```
 
 **项目初始化与版本控制**
 - 创建项目根目录并初始化Git版本控制系统

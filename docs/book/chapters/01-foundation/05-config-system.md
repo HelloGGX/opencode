@@ -540,18 +540,35 @@ bun run packages/opencode/src/config/test-load.ts
 
 完整的配置加载流程如下：
 
-```
-  全局配置              项目配置           环境变量          托管配置
-~/.config/opencode/  ./opencode.json  OPENCODE_CONFIG  /etc/opencode/
-opencode.json                                          opencode.json
-      │                   │                 │                │
-      └───────────────────┴─────────────────┴────────────────┘
-                                   │
-                            mergeDeep() 深度合并
-                                   │
-                          ConfigSchema.parse() 类型验证
-                                   │
-                              最终配置对象
+```mermaid
+graph TB
+    subgraph Sources["配置源（优先级从低到高）"]
+        Global["全局配置<br/>~/.config/opencode/opencode.json<br/>优先级: 1"]
+        Project["项目配置<br/>./opencode.json<br/>优先级: 2"]
+        Env["环境变量<br/>OPENCODE_CONFIG<br/>优先级: 3"]
+        Managed["托管配置<br/>/etc/opencode/opencode.json<br/>优先级: 4（最高）"]
+    end
+
+    subgraph Process["处理流程"]
+        Merge["mergeDeep() 深度合并<br/>高优先级覆盖低优先级"]
+        Validate["ConfigSchema.parse()<br/>Zod 类型验证"]
+        Final["最终配置对象<br/>类型安全 + 完整性保证"]
+    end
+
+    Global --> Merge
+    Project --> Merge
+    Env --> Merge
+    Managed --> Merge
+    Merge --> Validate
+    Validate --> Final
+
+    classDef sourceStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef processStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef finalStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class Global,Project,Env,Managed sourceStyle
+    class Merge,Validate processStyle
+    class Final finalStyle
 ```
 
 **优先级从低到高**：

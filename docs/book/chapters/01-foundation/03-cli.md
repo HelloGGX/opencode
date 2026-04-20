@@ -156,20 +156,45 @@ hello
 
 ```bash
 #!/usr/bin/env node
-const childProcess = require("child_process")
+const childProcess = require(“child_process”)
 ```
 
 这看起来很奇怪，第一行的 #!/usr/bin/env node 显然不是合法的 JS 代码。那么，V8 引擎在解析它时为什么没有抛出语法错误（SyntaxError）？
 
 其实，这段代码首先面对的并不是 JS 引擎，而是操作系统的内核。
 
-`#!/usr/bin/env node` 被称为 **Shebang**（也叫 Hashbang），它是 Unix/Linux 系统的一个特殊机制。在 Unix/Linux 系统中，当内核尝试加载一个文件时，会检查文件头部的前两个字节。如果发现是 0x23 和 0x21（即 #!），内核便会意识到：“这是一个纯文本脚本，我不能直接运行它，我需要调用后面的路径来解释它。”
+`#!/usr/bin/env node` 被称为 **Shebang**（也叫 Hashbang），它是 Unix/Linux 系统的一个特殊机制。在 Unix/Linux 系统中，当内核尝试加载一个文件时，会检查文件头部的前两个字节。如果发现是 0x23 和 0x21（即 #!），内核便会意识到：”这是一个纯文本脚本，我不能直接运行它，我需要调用后面的路径来解释它。”
 
 > **为什么叫 Shebang？**
 >
-> - `#` 读作 "sharp" 或 "hash"
-> - `!` 读作 "bang"
-> - 合起来就是 "shebang"
+> - `#` 读作 “sharp” 或 “hash”
+> - `!` 读作 “bang”
+> - 合起来就是 “shebang”
+
+```mermaid
+graph LR
+    subgraph Kernel[“内核处理流程”]
+        File[“文件: bin/opencode”]
+        Check[“检查文件头<br/>前两字节: 0x23 0x21<br/>即 #!”]
+        Shebang[“读取 Shebang 行<br/>#!/usr/bin/env node”]
+        Env[“/usr/bin/env<br/>在 PATH 中查找 node”]
+        Node[“找到 node 解释器<br/>执行脚本”]
+    end
+
+    File --> Check
+    Check -->|发现 #!| Shebang
+    Check -->|没有 #!| Error[“shell 尝试执行<br/>语法错误”]
+    Shebang --> Env
+    Env --> Node
+
+    classDef kernelStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef errorStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef successStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class File,Check,Shebang,Env kernelStyle
+    class Error errorStyle
+    class Node successStyle
+```
 
 ### 3.2.1 寻找解释器：为什么是 /usr/bin/env
 
@@ -181,7 +206,38 @@ const childProcess = require("child_process")
 
 但这种硬编码（Hardcoding）方案在真实的软件工程中是极其脆弱的。在 macOS 上，Node 可能安装在 /usr/local/bin；在 Linux 上，可能在 /usr/bin；如果用户使用了 NVM，路径又会深藏在用户的 Home 目录中。
 
-为了抹平这种环境碎片化，业界约定俗成的最佳实践是使用 env 工具：#!/usr/bin/env node。这样做的巧妙之处在于，内核会先调用系统自带的 env 程序，再由 env 程序去当前用户的 PATH 环境变量中动态搜寻 node 所在的位置。这是一种非常优雅的**“动态决议（Dynamic Resolution）”**策略。
+为了抹平这种环境碎片化，业界约定俗成的最佳实践是使用 env 工具：#!/usr/bin/env node。这样做的巧妙之处在于，内核会先调用系统自带的 env 程序，再由 env 程序去当前用户的 PATH 环境变量中动态搜寻 node 所在的位置。这是一种非常优雅的**”动态决议（Dynamic Resolution）”**策略。
+
+```mermaid
+graph TB
+    subgraph Hardcode[“硬编码方式（脆弱）”]
+        H1[“#!/usr/local/bin/node”]
+        H2[“macOS: /usr/local/bin/node ✓”]
+        H3[“Linux: /usr/bin/node ✗”]
+        H4[“NVM: ~/.nvm/.../node ✗”]
+        H1 --> H2
+        H1 --> H3
+        H1 --> H4
+    end
+
+    subgraph Dynamic[“动态决议（推荐）”]
+        D1[“#!/usr/bin/env node”]
+        D2[“env 在 PATH 中查找 node”]
+        D3[“macOS: 找到 /usr/local/bin/node ✓”]
+        D4[“Linux: 找到 /usr/bin/node ✓”]
+        D5[“NVM: 找到 ~/.nvm/.../node ✓”]
+        D1 --> D2
+        D2 --> D3
+        D2 --> D4
+        D2 --> D5
+    end
+
+    classDef hardcodeStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef dynamicStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class H1,H2,H3,H4 hardcodeStyle
+    class D1,D2,D3,D4,D5 dynamicStyle
+```
 
 ### 3.2.2 实验：理解 Shebang 的作用
 
@@ -244,6 +300,33 @@ startAIContext(args)
 为了解决这个难题，我们需要引入一种设计模式——启动器模式（Launcher Pattern）。
 
 在这种模式下，入口文件（bin/opencode）被彻底剥夺了业务处理能力，它的职责被缩减为一个纯粹的环境监测与路由器。
+
+```mermaid
+graph TB
+    subgraph Bad["❌ 直接绑定业务代码"]
+        B1["bin/opencode<br/>直接引入业务逻辑"]
+        B2["问题 1:<br/>冷启动延迟<br/>JIT 编译耗时"]
+        B3["问题 2:<br/>无法支持多架构<br/>darwin/linux/windows<br/>x64/arm64"]
+        B1 --> B2
+        B1 --> B3
+    end
+
+    subgraph Good["✓ 启动器模式"]
+        G1["bin/opencode<br/>启动器（轻量）"]
+        G2["环境检测<br/>- 平台<br/>- 架构<br/>- AVX2"]
+        G3["二进制路由<br/>- darwin-arm64<br/>- linux-x64<br/>- windows-x64"]
+        G4["执行目标程序<br/>stdio: inherit"]
+        G1 --> G2
+        G2 --> G3
+        G3 --> G4
+    end
+
+    classDef badStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef goodStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+    class B1,B2,B3 badStyle
+    class G1,G2,G3,G4 goodStyle
+```
 
 ### 3.3.1 实现一个基础启动器
 
@@ -413,7 +496,40 @@ function isMusl() {
 
 ### 3.3.4 降级策略：构建后备依赖队列
 明确了环境差异后，我们不能仅仅拼出一个包名就结束了。试想，如果系统支持 AVX2，但包管理器因为网络问题只下载了 Baseline（基础版）的包，程序是不是就该直接崩溃？
-更稳妥的设计是降级（Fallback）策略。我们需要构建一个数组，按照“最优匹配 -> 次优匹配 -> 基础兼容”的顺序，生成一个可能存在的包名列表。
+更稳妥的设计是降级（Fallback）策略。我们需要构建一个数组，按照”最优匹配 -> 次优匹配 -> 基础兼容”的顺序，生成一个可能存在的包名列表。
+
+```mermaid
+graph TB
+    Start[开始: Linux x64 不支持 AVX2 + musl]
+
+    subgraph Priority[“降级优先级队列”]
+        P1[“优先级 1:<br/>opencode-linux-x64-baseline-musl<br/>最精确匹配”]
+        P2[“优先级 2:<br/>opencode-linux-x64-musl<br/>忽略 AVX2 标记”]
+        P3[“优先级 3:<br/>opencode-linux-x64-baseline<br/>忽略 musl 标记”]
+        P4[“优先级 4:<br/>opencode-linux-x64<br/>基础版本”]
+    end
+
+    Start --> P1
+    P1 -->|找不到| P2
+    P2 -->|找不到| P3
+    P3 -->|找不到| P4
+    P4 -->|找不到| Error[报错: 无法找到兼容包]
+
+    P1 -->|找到| Success[执行二进制文件]
+    P2 -->|找到| Success
+    P3 -->|找到| Success
+    P4 -->|找到| Success
+
+    classDef startStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef priorityStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef successStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef errorStyle fill:#ffebee,stroke:#c62828,stroke-width:2px
+
+    class Start startStyle
+    class P1,P2,P3,P4 priorityStyle
+    class Success successStyle
+    class Error errorStyle
+```
 
 ```javascript
 const names = (() => {
