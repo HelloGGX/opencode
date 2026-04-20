@@ -129,46 +129,91 @@ interface Config {
 
 这种缺陷会导致错误被延后。程序可能要在执行到发起网络请求的那一刻，才因为缺少 `provider` 字段而崩溃，此时抛出的错误栈往往极其深且难以溯源。
 
-### 5.2.2 基于 Zod 的运行时校验
+### 5.2.2 为什么需要 Effect + Zod 混合方案
 
-既然如此，我们就需要一种新的方案：能够在运行时对外部输入进行严格的结构化校验。这正是 Zod 等 Schema 校验库的核心设计目标。
+Zod 的纯运行时校验方案虽然直观，但存在一个关键问题：校验逻辑与业务代码耦合。当我们在 `effect-zod.ts` 中实现了 Effect 到 Zod 的桥接层后，可以获得两个框架的优势：
 
-首先安装 Zod 依赖：
+**Effect 框架带来的能力**：
+- **依赖注入（DI）**：配置加载可以作为 Effect Service，通过 `Context.Service` 声明依赖
+- **错误类型安全**：使用 `Cause` 系统替代 try/catch，错误类型可推断
+- **组合式校验**：通过 `Schema.transform`、`Schema.compose` 等组合子构建复杂校验
+- **与项目其他模块统一**：项目中的认证、存储、网络等模块都基于 Effect Service
 
-```bash
-cd packages/opencode
-bun add zod
+**Zod 保留的能力**：
+- **JSON Schema 生成**：通过 `zod(InfoSchema)` 可以导出配置的标准 JSON Schema
+- **`$ref` 引用支持**：通过 `ZodOverride` 注解在 Effect Schema 中嵌入 Zod Schema
+
+**实际项目中的混合模式**（packages/opencode/src/config/config.ts）：
+
+```typescript
+import { Context, Effect, Schema } from "effect"
+import { zod, ZodOverride } from "@/util/effect-zod"
+
+// 使用 Effect Schema API 定义配置结构
+const InfoSchema = Schema.Struct({
+  $schema: Schema.optional(Schema.String).annotate({
+    description: "JSON schema reference for configuration validation",
+  }),
+  model: Schema.optional(ConfigModelID).annotate({ description: "Model to use..." }),
+  agent: Schema.optional(Schema.Struct({ ... })),
+  // ...
+})
+
+// 对于有 .transform / .preprocess 的子模块，通过 ZodOverride 嵌入原始 Zod Schema
+const AgentRef = Schema.Any.annotate({ [ZodOverride]: ConfigAgent.Info })
+
+// 最终导出为 Zod 类型，供 JSON Schema 生成和 $ref 解析使用
+export const Info = (zod(InfoSchema) as unknown as z.ZodObject<any>)
+  .strict()
+  .meta({ ref: "Config" }) as unknown as z.ZodType<DeepMutable<...>>
 ```
 
-接下来，我们在 `packages/opencode/src/config/` 目录下定义配置的 Schema：
+这种设计让配置系统既能享受 Effect 的类型安全和组合能力，又能兼容 Zod 的生态系统。
+
+### 5.2.3 运行时校验的实现
+
+接下来，我们在 `packages/opencode/src/config/` 目录下定义配置的 Schema，使用 Effect Schema API：
 
 ```typescript
 // packages/opencode/src/config/config.ts
 import fs from "fs/promises"
-import z from "zod"
+import { Schema } from "effect"
+import { zod } from "@/util/effect-zod"
 import { parse as parseJsonc } from "jsonc-parser"
 
-const ModelId = z.string()
+// 使用 Effect Schema API 定义模型 ID 校验
+const ModelId = Schema.String.pipe(Schema.pattern(/^[^\/]+\/[^\/]+$/, { description: "provider/model format" }))
 
-const BaseConfigSchema = z.object({
-  model: ModelId.optional().describe("AI model to use, format: model"),
-  provider: z.enum(["openai", "anthropic"]).optional().describe("AI provider"),
-  apiKey: z.string().optional().describe("API key for the provider"),
+// 定义基础配置 Schema
+const BaseConfigSchema = Schema.Struct({
+  model: Schema.optional(ModelId).annotate({ description: "AI model to use, format: provider/model" }),
+  provider: Schema.optional(Schema.Literal("openai", "anthropic")).annotate({ description: "AI provider" }),
+  apiKey: Schema.optional(Schema.String).annotate({ description: "API key for the provider" }),
 })
 
-type Config = z.infer<typeof BaseConfigSchema>
+// 转换为 Zod 类型（用于 JSON Schema 生成和配置编辑器支持）
+export const Config = zod(BaseConfigSchema)
+export type Config = Schema.Schema.Type<typeof BaseConfigSchema>
 
 async function loadConfig(): Promise<Config> {
   const content = await fs.readFile("opencode.json", "utf-8")
   const raw = parseJsonc(content)
-  return BaseConfigSchema.partial().strict().parse(raw)
+  // 使用 Zod 的 .strict() 拒绝未知字段
+  return Config.strict().parse(raw)
 }
 
 const config = await loadConfig()
 console.log(config)
 ```
 
-现在，如果我们再次加载包含拼写错误的配置，程序会在第一时间拦截并抛出精准的错误：
+安装必要的依赖：
+
+```bash
+cd packages/opencode
+bun add effect zod
+```
+
+运行代码后，如果我们再次加载包含拼写错误的配置，程序会在第一时间拦截并抛出精准的错误：
 
 ```bash
 bun run src/config/config.ts
@@ -189,38 +234,7 @@ ZodError: [
 
 你看，错误信息直接指出了 `providre` 字段不符合预期。这种"尽早失败"的机制极大提升了工具的健壮性。
 
-接下来，我们继续完善配置 Schema。假设我们希望约束模型名的格式，要求在模型名前加上提供商的前缀，比如 `openai/gpt-4o-mini`。我们只需要修改 `ModelId` 定义，添加一个正则表达式校验：
-
-```typescript
-// packages/opencode/src/config/config.ts
-import fs from "fs/promises"
-import z from "zod"
-
-const ModelId = z.string().regex(/^[^\/]+\/[^\/]+$/, "Invalid model ID format")
-```
-
-执行代码：
-
-```bash
-bun run src/config/config.ts
-```
-
-会有如下报错：
-
-```text
-ZodError: [
-  {
-    "origin": "string",
-    "code": "invalid_format",
-    "format": "regex",
-    "pattern": "/^[^\\/]+\\/[^\\/]+$/",
-    "path": [
-      "model"
-    ],
-    "message": "Invalid model ID format"
-  }
-]
-```
+由于在 `ModelId` 定义中已经使用了 `Schema.pattern()` 约束了 `provider/model` 格式，当用户输入不正确的格式时会自动报错。例如配置为 `"model": "gpt-4o-mini"`（缺少提供商前缀）时：
 
 于是我们将 `opencode.json` 的内容修改为：
 
@@ -245,15 +259,14 @@ ZodError: [
 
 为了解决这个问题，我们需要引入多层级配置。在实际的 OpenCode 项目中，配置的来源分为以下几级（优先级从低到高）：
 
-1. **远程配置**：存放在组织的 `.well-known/opencode`，用于定义组织的默认策略。
-2. **全局配置**：存放在用户配置目录下（如 `~/.config/opencode/opencode.json`），代表用户的默认偏好。
-3. **自定义配置**：通过 `OPENCODE_CONFIG` 环境变量指定，自定义配置文件的路径。
-4. **项目配置**：存放在当前工作目录下（如 `./opencode.json`），针对特定项目的重写。
-5. **.opencode 目录配置**：存放在 `.opencode/` 目录下，包含 agents、commands、plugins 等子目录的配置。
-6. **内联配置**：通过 `OPENCODE_CONFIG_CONTENT` 环境变量直接传入 JSON 字符串。
-7. **托管配置**：存放在系统的全局共享目录（如 `/etc/opencode/opencode.json`），通常用于企业的强制管控策略，优先级最高。
+1. **全局配置**：存放在用户配置目录下（如 `~/.config/opencode/opencode.json`），代表用户的默认偏好。
+2. **环境变量指定配置**：通过 `OPENCODE_CONFIG` 环境变量指定，自定义配置文件的路径。
+3. **项目配置**：存放在当前工作目录下（如 `./opencode.json`），针对特定项目的重写。
+4. **.opencode 目录配置**：存放在 `.opencode/` 目录下，包含 agents、commands、plugins 等子目录的配置。
+5. **内联配置**：通过 `OPENCODE_CONFIG_CONTENT` 环境变量直接传入 JSON 字符串。
+6. **托管配置**：来自两个渠道——系统的全局共享目录（如 `/etc/opencode/opencode.json`）以及账户服务获取的云端托管配置（如企业控制台统一管理的策略）。
 
-> **本章实现**：为简化表述，本章我们先实现其中最核心的 4 个层级：全局配置、项目配置、环境变量指定配置、托管配置。远程配置、.opencode 目录配置、内联配置将在后续章节中逐步引入。
+> **本章实现**：为简化表述，本章我们先实现其中最核心的 4 个层级：全局配置、项目配置、环境变量指定配置、托管配置。远程配置（`.well-known/opencode`）、.opencode 目录配置、内联配置将在后续章节中逐步引入。
 
 那么问题来了：为什么托管配置的优先级最高？
 
@@ -432,53 +445,82 @@ bun add remeda
 
 ```typescript
 // packages/opencode/src/config/config.ts
-import fs from "fs/promises"
-import path from "path"
-import z from "zod"
+import { Effect, Schema } from "effect"
 import { mergeDeep } from "remeda"
 import { ConfigPaths } from "./paths"
+import { parse as parseJsonc } from "jsonc-parser"
+import type { AppFileSystem } from "@opencode-ai/shared/filesystem"
 
-const ModelId = z.string().regex(/^[^\/]+\/[^\/]+$/, "Invalid model ID format")
-
-const ConfigSchema = z.object({
-  model: ModelId.optional(),
-  provider: z.enum(["openai", "anthropic"]).optional(),
-  apiKey: z.string().optional(),
+// 使用 Effect.fnUntraced 定义无追踪的 Effect 函数
+const readConfigFile = Effect.fnUntraced(function* (filepath: string) {
+  const fs = yield* AppFileSystem.Service
+  return yield* fs.readFileString(filepath).pipe(
+    Effect.catchIf(
+      (e) => e.reason._tag === "NotFound",
+      () => Effect.succeed(undefined),
+    ),
+    Effect.orDie,
+  )
 })
 
-type Config = z.infer<typeof ConfigSchema>
+const loadFile = Effect.fnUntraced(function* (filepath: string) {
+  const text = yield* readConfigFile(filepath)
+  if (!text) return {} as Info
+  return yield* loadConfig(text, { path: filepath })
+})
 
-async function loadFile(filePath: string): Promise<Partial<Config>> {
-  try {
-    const content = await fs.readFile(filePath, "utf-8")
-    const raw = ConfigPaths.parseText(content, filePath)
-    return ConfigSchema.partial().parse(raw)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return {}
+const loadConfig = Effect.fnUntraced(function* (
+  text: string,
+  options: { path: string } | { dir: string; source: string },
+) {
+  const source = "path" in options ? options.path : options.source
+  const parsed = parseJsonc(text)
+  // 使用 Effect Schema 的校验
+  return Config.parse(parsed, { onExcessProperty: "strip" })
+})
+
+// 配置加载函数：按优先级深度合并多层配置
+export const loadInstanceState = Effect.fn("Config.loadInstanceState")(function* (ctx) {
+  let result: Info = {}
+
+  // 1. 全局配置（优先级最低）
+  result = mergeDeep(result, yield* loadFile(ConfigPaths.globalConfigFile()))
+
+  // 2. OPENCODE_CONFIG 环境变量
+  if (Flag.OPENCODE_CONFIG) {
+    result = mergeDeep(result, yield* loadFile(Flag.OPENCODE_CONFIG))
+  }
+
+  // 3. 项目配置（向上遍历目录树）
+  for (const file of yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree)) {
+    result = mergeDeep(result, yield* loadFile(file))
+  }
+
+  // 4. .opencode 目录配置
+  for (const dir of yield* ConfigPaths.directories(ctx.directory, ctx.worktree)) {
+    for (const file of ["opencode.json", "opencode.jsonc"]) {
+      const source = path.join(dir, file)
+      result = mergeDeep(result, yield* loadFile(source))
     }
-    throw error
-  }
-}
-
-export async function load(cwd: string = process.cwd()): Promise<Config> {
-  let result: Config = {}
-
-  result = mergeDeep(result, await loadFile(ConfigPaths.globalConfigFile()))
-
-  result = mergeDeep(result, await loadFile(ConfigPaths.projectConfigFile(cwd)))
-
-  if (process.env.OPENCODE_CONFIG) {
-    result = mergeDeep(result, await loadFile(process.env.OPENCODE_CONFIG))
   }
 
-  result = mergeDeep(result, await loadFile(path.join(ConfigPaths.managedDir(), "opencode.json")))
+  // 5. OPENCODE_CONFIG_CONTENT 内联配置
+  if (process.env.OPENCODE_CONFIG_CONTENT) {
+    const source = "OPENCODE_CONFIG_CONTENT"
+    result = mergeDeep(result, yield* loadConfig(process.env.OPENCODE_CONFIG_CONTENT, { dir: ctx.directory, source }))
+  }
 
-  return ConfigSchema.parse(result)
-}
+  // 6. 托管配置（优先级最高）
+  const managed = ConfigPaths.managed()
+  if (managed) {
+    result = mergeDeep(result, yield* loadConfig(managed.text, { dir: managed.dir, source: managed.source }))
+  }
+
+  return result
+})
 ```
 
-`load函数`实现了优先级从低到高逐个加载全局配置、项目配置、环境变量指定配置、托管配置深度合并。配置加载完成后，通过 `ConfigSchema.parse()` 进行最终校验。
+`loadInstanceState` 函数使用 Effect 的生成器语法，实现了多层级配置的按序加载和深度合并。相比于纯 async/await 模式，Effect 提供了更好的错误类型推断和组合能力。
 
 ### 5.3.4 验证多层级合并
 
@@ -544,9 +586,11 @@ bun run packages/opencode/src/config/test-load.ts
 graph TB
     subgraph Sources["配置源（优先级从低到高）"]
         Global["全局配置<br/>~/.config/opencode/opencode.json<br/>优先级: 1"]
-        Project["项目配置<br/>./opencode.json<br/>优先级: 2"]
-        Env["环境变量<br/>OPENCODE_CONFIG<br/>优先级: 3"]
-        Managed["托管配置<br/>/etc/opencode/opencode.json<br/>优先级: 4（最高）"]
+        Env["环境变量<br/>OPENCODE_CONFIG<br/>优先级: 2"]
+        Project["项目配置<br/>./opencode.json<br/>优先级: 3"]
+        DotOpencode[".opencode 目录<br/>.opencode/opencode.json<br/>优先级: 4"]
+        Inline["内联配置<br/>OPENCODE_CONFIG_CONTENT<br/>优先级: 5"]
+        Managed["托管配置<br/>/etc/opencode 或 账户服务<br/>优先级: 6（最高）"]
     end
 
     subgraph Process["处理流程"]
@@ -573,9 +617,11 @@ graph TB
 
 **优先级从低到高**：
 1. 全局配置 `~/.config/opencode/opencode.json`
-2. 项目配置 `./opencode.json`
-3. 环境变量 `OPENCODE_CONFIG`
-4. 托管配置 `/etc/opencode/opencode.json`（最高优先级，企业强制）
+2. 环境变量 `OPENCODE_CONFIG`
+3. 项目配置 `./opencode.json`
+4. .opencode 目录配置 `.opencode/opencode.json`
+5. 内联配置 `OPENCODE_CONFIG_CONTENT`
+6. 托管配置 `/etc/opencode` 或账户服务（最高优先级，企业强制）
 
 ## 5.5 设计权衡总结
 

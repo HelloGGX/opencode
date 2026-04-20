@@ -107,7 +107,11 @@ $ readlink /Users/gavin/.bun/bin/opencode
 }
 ```
 
-这个配置告诉bun："当用户安装这个包时，请创建一个名为 `opencode` 的命令，指向 `./bin/opencode` 文件,也就是上一节我们提到的符号链接：`~/.bun/bin/opencode` , 该链接直接指向该包的实际安装目录：`~/.bun/install/global/node_modules/opencode-ai`。
+这个配置告诉 bun："当用户安装这个包时，请创建一个名为 `opencode` 的命令，指向 `./bin/opencode` 文件。
+
+包管理器会在全局的 bin 目录中创建一个指向实际安装位置的符号链接（如 `~/.bun/bin/opencode`），而实际二进制文件则存放在 node_modules 下的平台特定目录中。
+
+实际的启动器实现采用了一种更通用的策略：它会沿着目录树向上遍历，查找 node_modules 中对应平台的二进制文件。这种设计允许包管理器以任何方式安装，只要在目录树中能找到对应平台的二进制目录即可。
 
 ### 3.1.3 实验：验证这个机制
 
